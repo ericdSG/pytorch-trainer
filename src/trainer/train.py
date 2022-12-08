@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
 import torch
 from fastprogress import progress_bar
@@ -117,7 +117,7 @@ class Trainer:
         dl: DataLoader,
         train: bool = False,
         predictions: bool = False,
-    ) -> list[float]:
+    ) -> Union[list[float], list[torch.Tensor]]:
 
         # switch off grad engine if applicable
         self.model.train() if train else self.model.eval()
@@ -198,7 +198,7 @@ class Trainer:
 
         logger.info(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
 
-    def close(self):
+    def close(self) -> None:
         """
         Close any objects that need it.
         """

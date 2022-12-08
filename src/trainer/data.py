@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_dl(
-    x_dir: Path | str,
-    y_dir: Path | str,
+    x_dir: Path,
+    y_dir: Path,
     batch_size: int,
     valid: bool = False,
 ) -> Union[DataLoader, Tuple[DataLoader, DataLoader]]:
