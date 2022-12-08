@@ -46,7 +46,7 @@ class Trainer:
         self.v_dl = v_dl
 
         # model
-        self.model = model
+        self.model = model.to(self.cfg.device)
 
         # path for checkpoints
         experiment_dir = self.cfg.checkpoint_dir / self.cfg.experiment
@@ -125,7 +125,7 @@ class Trainer:
         pbar = progress_bar(dl, leave=False)
 
         if predictions:
-            return [self.model(x).detach() for x, _ in pbar]
+            return [self.model(x.to(self.cfg.device)).detach() for x, _ in pbar]
 
         # collect metric averages
         average_meters = [AverageMeter() for _ in self.metrics]
