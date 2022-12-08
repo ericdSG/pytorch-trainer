@@ -1,0 +1,84 @@
+#!/usr/bin/env python
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+from hydra import compose, initialize
+from omegaconf import DictConfig, OmegaConf
+from torch.nn import L1Loss, MSELoss
+
+from MLtools.utils.logging import configure_logger
+from trainer.config import type_validate_config
+from trainer.data import get_dl
+from trainer.models import LSTM
+from trainer.train import Trainer
+
+logger = logging.getLogger(__name__)
+configure_logger()
+
+
+def parse_config() -> DictConfig:
+
+    if len(sys.argv) == 2:  # load configuration file from command line
+        if (yaml_path := Path(sys.argv[1])).suffix not in {".yml", ".yaml"}:
+            logger.error("Only YAML configuration files are supported")
+            exit(1)
+        yaml = OmegaConf.load(yaml_path)
+
+    else:  # compose with Hydra
+        with initialize("../config", None):
+            yaml = compose("motion")
+
+    return type_validate_config(yaml)
+
+
+def main(cfg: DictConfig) -> None:
+
+    # create PyTorch DataLoaders
+    t_dl, v_dl = get_dl(
+        cfg.train.data.x_dir,
+        cfg.train.data.y_dir,
+        batch_size=cfg.train.batch_size,
+        valid=True,
+    )
+
+    # instantiate PyTorch model
+    model = LSTM(
+        input_size=t_dl.dataset[0][0].shape[-1],
+        out_features=t_dl.dataset[0][1].data.shape[-1],
+        **cfg.arch.lstm,  # unpack the rest of the hyperparams as kwargs
+    )
+
+    # define regression metrics to track; loss must be first
+    metrics = [MSELoss(), L1Loss()]
+
+    # collect model components into a Trainer objects
+    trainer = Trainer(cfg, model, t_dl, v_dl, metrics)
+
+    # train the model
+    trainer.train()
+
+    # inference
+    t_dl = get_dl(
+        cfg.test.data.x_dir,
+        cfg.test.data.y_dir,
+        batch_size=cfg.test.batch_size,
+    )
+
+    trainer.load_checkpoint(trainer.checkpoint_dir / "checkpoint_best.pth")
+    predictions = trainer.predict(t_dl, predictions=True)
+
+
+if __name__ == "__main__":
+
+    cfg = parse_config()
+
+    try:
+        main(cfg)
+
+    except (KeyboardInterrupt, Exception):
+        logger.exception("")
+        exit(1)
