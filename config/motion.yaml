@@ -12,7 +12,7 @@ cuda:
   num_gpus: -1
   visible_devices: [0, 1, 2, 3]
 
-experiment: sample-motion
+experiment: motion
 
 num_workers: 0
 

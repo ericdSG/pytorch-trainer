@@ -58,18 +58,21 @@ def main(cfg: DictConfig) -> None:
     # collect model components into a Trainer objects
     trainer = Trainer(cfg, model, t_dl, v_dl, metrics)
 
-    # train the model
+    logger.info("Training")
     trainer.train()
 
-    # inference
+    # create PyTorch DataLoader for inference
     t_dl = get_dl(
         cfg.test.data.x_dir,
         cfg.test.data.y_dir,
         batch_size=cfg.test.batch_size,
     )
 
+    logger.info("Running model in inference mode")
+    logger.info(f"Predicting {len(t_dl)} samples")
     trainer.load_checkpoint(trainer.checkpoint_dir / "checkpoint_best.pth")
     predictions = trainer.predict(t_dl, predictions=True)
+    logger.info(f"{len(predictions)} predictions collected")
 
 
 if __name__ == "__main__":
