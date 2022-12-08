@@ -15,7 +15,6 @@ from typing import Any, Callable, Union
 import torch
 from fastprogress import progress_bar
 from omegaconf import DictConfig
-from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 
@@ -33,37 +32,26 @@ class Trainer:
         self,
         cfg: DictConfig,
         model: torch.nn.Module,
+        optimizer: torch.nn.Module,
         t_dl: DataLoader,
         v_dl: DataLoader,
         metrics: list[Callable],
-        optimizer: torch.nn.Module | None = None,
     ) -> None:
 
         self.cfg = cfg
-
-        # data
+        self.model = model.to(self.cfg.device)
+        self.optimizer = optimizer
         self.t_dl = t_dl
         self.v_dl = v_dl
+        self.metrics = metrics
 
-        # model
-        self.model = model.to(self.cfg.device)
+        logger.info(f"Monitoring {self.metrics[0].__class__.__name__}")
 
         # path for checkpoints
         experiment_dir = self.cfg.checkpoint_dir / self.cfg.experiment
         self.checkpoint_dir = (
             experiment_dir / self.model.__class__.__name__.lower()
         )
-
-        # define optimizer
-        if not optimizer:
-            self.optimizer = AdamW(
-                self.model.parameters(),
-                self.cfg.train.lr,
-                betas=(0.9, 0.99),
-                eps=1e-05,
-            )
-        else:
-            self.optimizer = optimizer
 
         # training
         self.start_epoch = 0
@@ -75,10 +63,6 @@ class Trainer:
             epochs=self.cfg.train.epochs,
             steps_per_epoch=len(self.t_dl),
         )
-
-        # evaluation
-        self.metrics = metrics
-        logger.info(f"Monitoring {self.metrics[0].__class__.__name__}")
 
         # list of objects that need to be closed at the end of training
         self.closable = []

@@ -6,9 +6,9 @@ import logging
 import sys
 from pathlib import Path
 
+import torch
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
-from torch.nn import L1Loss, MSELoss
 
 from MLtools.utils.logging import configure_logger
 from trainer.config import type_validate_config
@@ -30,7 +30,7 @@ def parse_config() -> DictConfig:
 
     else:  # compose with Hydra
         with initialize("../config", None):
-            yaml = compose("motion")
+            yaml = compose("example_motion")
 
     return type_validate_config(yaml)
 
@@ -52,11 +52,19 @@ def main(cfg: DictConfig) -> None:
         **cfg.arch.lstm,  # unpack the rest of the hyperparams as kwargs
     )
 
+    # instantiate optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        cfg.train.lr,
+        betas=(0.9, 0.99),
+        eps=1e-05,
+    )
+
     # define regression metrics to track; loss must be first
-    metrics = [MSELoss(), L1Loss()]
+    metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
     # collect model components into a Trainer objects
-    trainer = Trainer(cfg, model, t_dl, v_dl, metrics)
+    trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics)
 
     logger.info("Training")
     trainer.train()
