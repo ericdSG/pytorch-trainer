@@ -11,8 +11,7 @@ Clone the repo, navigate to the top-level directory, and:
 
 1. Initialize submodules
     ```bash
-    git submodule update --init &&
-    git lfs install && git lfs pull
+    git submodule update --init --recursive
     ```
 
 1. Create a new conda environment `trainer` with dependencies from `environment.yml`
@@ -24,6 +23,12 @@ Clone the repo, navigate to the top-level directory, and:
     ```bash
     pre-commit install --install-hooks
     ```
+
+# :rocket: Demo
+
+```bash
+./scripts/motion.py
+```
 
 # TODO
 
