@@ -56,7 +56,7 @@ class Trainer:
 
         # training
         self.start_epoch = 0
-        self.best_val_acc = 0.0
+        self.best_val_loss = 0.0
         self.optimizer = self.optimizer
         self.lr_scheduler = OneCycleLR(
             self.optimizer,
@@ -76,12 +76,12 @@ class Trainer:
 
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
-            train_loss, train_acc = self.predict(self.t_dl, train=True)
-            valid_loss, valid_acc = self.predict(self.v_dl)
+            train_metrics = self.predict(self.t_dl, train=True)
+            valid_metrics = self.predict(self.v_dl)
 
             # determine whether model performance has improved in this epoch
-            is_best = valid_acc > self.best_val_acc
-            self.best_val_acc = max(valid_acc, self.best_val_acc)
+            is_best = valid_metrics[0] > self.best_val_loss
+            self.best_val_loss = max(valid_metrics[0], self.best_val_loss)
 
             # save model parameters and metadata
             self.save_checkpoint(
@@ -143,7 +143,7 @@ class Trainer:
 
             pbar.comment = ""
 
-        return [metric.val for metric in average_meters]
+        return [metric.val.detach().cpu().numpy() for metric in average_meters]
 
     def save_checkpoint(
         self,
