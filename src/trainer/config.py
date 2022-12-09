@@ -7,7 +7,7 @@ Avoid setting defaults, except None for optional values.
 Created: Dec 2022 by Eric DeMattos
 """
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 class LSTM:
     hidden_size: int
     num_layers: int
-    bidirectional: Optional[bool] = None
-    dropout: Optional[float] = None
+    bidirectional: Optional[bool] = field(default=False)  # PyTorch default
+    dropout: Optional[float] = field(default=0.0)  # PyTorch default
 
 
 @dataclass
@@ -32,9 +32,10 @@ class Arch:
 
 @dataclass
 class CUDA:
-    device: int
     num_gpus: int
-    visible_devices: Optional[list[int]] = None
+    visible_devices: Optional[list[int]] = field(
+        default_factory=lambda: [i for i in range(torch.cuda.device_count())]
+    )
 
 
 @dataclass

@@ -8,9 +8,7 @@ arch:
 checkpoint_dir: ${repo_dir}/checkpoints
 
 cuda:
-  device: 0
   num_gpus: -1
-  visible_devices: [0, 1, 2, 3]
 
 experiment: motion
 
