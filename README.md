@@ -27,7 +27,7 @@ Clone the repo, navigate to the top-level directory, and:
 # :rocket: Demo
 
 ```bash
-./scripts/motion.py
+./scripts/example_motion.py
 ```
 
 # TODO
