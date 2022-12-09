@@ -202,4 +202,4 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    raise NotImplementedError("train.py should not be run directly.")
+    raise NotImplementedError("train.py should not be run directly")
