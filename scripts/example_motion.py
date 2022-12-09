@@ -51,6 +51,7 @@ def main(cfg: DictConfig) -> None:
         out_features=t_dl.dataset[0][1].data.shape[-1],
         **cfg.arch.lstm,  # unpack the rest of the hyperparams as kwargs
     )
+    model.to(cfg.device)
 
     # instantiate optimizer
     optimizer = torch.optim.AdamW(
@@ -79,7 +80,7 @@ def main(cfg: DictConfig) -> None:
     logger.info("Running model in inference mode")
     logger.info(f"Predicting {len(t_dl)} samples")
     trainer.load_checkpoint(trainer.checkpoint_dir / "checkpoint_best.pth")
-    predictions = trainer.predict(t_dl, predictions=True)
+    predictions = trainer.predict(t_dl, test=True)
     logger.info(f"{len(predictions)} predictions collected")
 
 

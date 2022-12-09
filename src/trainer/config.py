@@ -88,11 +88,21 @@ def validate_device(cfg: DictConfig) -> DictConfig:
 
         logger.info(f"Requested {cfg.cuda.num_gpus} of {total_gpus} GPUs")
 
-    cuda = f"cuda (num_gpus={cfg.cuda.num_gpus})"
-    logger.info(f"Using {cuda if cfg.cuda.num_gpus > 0 else 'cpu'}")
+        if cfg.cuda.num_gpus > 1:
+            logger.warning(f"DistributedDataParallel not yet supported")
+            logger.warning(f"Resuming with 1 GPU")
+            cfg.cuda.num_gpus = 1
 
     with open_dict(cfg):
         cfg.device = "cuda" if cfg.cuda.num_gpus > 0 else "cpu"
+
+    if cfg.device == "cpu":
+        logger.error("Trainer assumes GPU-based training")
+        logger.error("To use CPU, remove support for mixed precision")
+        exit(1)
+
+    cuda = f"cuda (num_gpus={cfg.cuda.num_gpus})"
+    logger.info(f"Using {cuda if cfg.cuda.num_gpus > 0 else 'cpu'}")
 
     return cfg
 

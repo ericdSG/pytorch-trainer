@@ -15,6 +15,7 @@ from typing import Any, Callable, Union
 import torch
 from fastprogress import progress_bar
 from omegaconf import DictConfig
+from torch.cuda.amp import GradScaler
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 
@@ -39,7 +40,7 @@ class Trainer:
     ) -> None:
 
         self.cfg = cfg
-        self.model = model.to(self.cfg.device)
+        self.model = model
         self.optimizer = optimizer
         self.t_dl = t_dl
         self.v_dl = v_dl
@@ -63,6 +64,7 @@ class Trainer:
             epochs=self.cfg.train.epochs,
             steps_per_epoch=len(self.t_dl),
         )
+        self.scaler = GradScaler()  # automatic mixed precision
 
         # list of objects that need to be closed at the end of training
         self.closable = []
@@ -89,6 +91,7 @@ class Trainer:
                     "model_state": self.model.state_dict(),
                     "optimizer_state": self.optimizer.state_dict(),
                     "scheduler_state": self.lr_scheduler.state_dict(),
+                    "scaler_state": self.scaler.state_dict(),
                 },
                 is_best=is_best,
             )
@@ -100,15 +103,16 @@ class Trainer:
         self,
         dl: DataLoader,
         train: bool = False,
-        predictions: bool = False,
+        test: bool = False,
     ) -> Union[list[float], list[torch.Tensor]]:
 
         # switch off grad engine if applicable
         self.model.train() if train else self.model.eval()
 
+        # wrap DataLoader iterable in a progress bar
         pbar = progress_bar(dl, leave=False)
 
-        if predictions:
+        if test:
             return [self.model(x.to(self.cfg.device)).detach() for x, _ in pbar]
 
         # collect metric averages
@@ -117,19 +121,25 @@ class Trainer:
         for x, y in pbar:
 
             x, y = x.to(self.cfg.device), y.to(self.cfg.device)
-            y_hat = self.model(x)
 
-            # the first metric in the list is the loss function
-            batch_metrics = [metric(y_hat, y) for metric in self.metrics]
+            # automatic mixed precision (amp)
+            with torch.cuda.amp.autocast():
 
-            if train:
-                batch_metrics[0].backward()
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                self.lr_scheduler.step()
+                # forward pass
+                y_hat = self.model(x)
 
-            for i, m in enumerate(average_meters):
-                m.update(batch_metrics[i])
+                # the first metric in the list is the loss function
+                batch_metrics = [metric(y_hat, y) for metric in self.metrics]
+
+                if train:
+                    self.scaler.scale(batch_metrics[0]).backward()  # amp
+                    self.optimizer.zero_grad()
+                    self.scaler.step(self.optimizer)  # amp
+                    self.lr_scheduler.step()
+                    self.scaler.update()  # amp
+
+                for i, m in enumerate(average_meters):
+                    m.update(batch_metrics[i])
 
             pbar.comment = ""
 
@@ -154,6 +164,7 @@ class Trainer:
             "model_state",
             "optimizer_state",
             "scheduler_state",
+            "scaler_state",
         }
         assert (
             checkpoint.keys() >= REQUIRED_KEYS
