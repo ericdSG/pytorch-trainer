@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import torch
 from fastprogress import progress_bar
 from omegaconf import DictConfig
@@ -38,6 +39,7 @@ class Trainer:
         v_dl: DataLoader,
         metrics: list[Callable],
         rank: int = 0,
+        comparison: str = "lt",  # {"lt", "gt"}
     ) -> None:
 
         self.cfg = cfg
@@ -47,8 +49,7 @@ class Trainer:
         self.v_dl = v_dl
         self.metrics = metrics
         self.rank = rank
-
-        logger.info(f"Monitoring {self.metrics[0].__class__.__name__}")
+        self.comparison = comparison
 
         # path for checkpoints
         experiment_dir = self.cfg.checkpoint_dir / self.cfg.experiment
@@ -58,7 +59,7 @@ class Trainer:
 
         # training
         self.start_epoch = 0
-        self.best_val_loss = 0.0
+        self.best_loss = torch.inf if self.comparison == "lt" else -torch.inf
         self.optimizer = self.optimizer
         self.lr_scheduler = OneCycleLR(
             self.optimizer,
@@ -70,6 +71,17 @@ class Trainer:
 
         # list of objects that need to be closed at the end of training
         self.closable = []
+
+    def _compare(self, epoch_loss, best_loss):
+        if self.comparison == "lt":
+            compare = np.less
+            self.best_loss = min(epoch_loss, best_loss)
+        elif self.comparison == "gt":
+            compare = np.greater
+            self.best_loss = max(epoch_loss, best_loss)
+        else:
+            raise NotImplementedError(f'Trainer `comp` must be "lt" or "gt"')
+        return compare(epoch_loss, best_loss)
 
     def train(self, resume: bool = False) -> None:
 
@@ -85,8 +97,7 @@ class Trainer:
             torch.distributed.barrier()  # wait for all GPUs
 
             # determine whether model performance has improved in this epoch
-            is_best = valid_metrics[0] > self.best_val_loss
-            self.best_val_loss = max(valid_metrics[0], self.best_val_loss)
+            is_best = self._compare(valid_metrics[0], self.best_loss)
 
             # save model parameters and metadata
             self.save_checkpoint(
@@ -125,10 +136,10 @@ class Trainer:
 
             if train:
                 self.scaler.scale(batch_metrics[0]).backward()  # amp
-                self.optimizer.zero_grad()
                 self.scaler.step(self.optimizer)  # amp
-                self.lr_scheduler.step()
                 self.scaler.update()  # amp
+                self.lr_scheduler.step()
+                self.optimizer.zero_grad()
 
             for i, m in enumerate(meters):
                 m.update(batch_metrics[i])
@@ -166,7 +177,7 @@ class Trainer:
             self._run_batch(x, y, average_meters, train)
             # pbar.comment = ""
 
-        return [metric.val.detach().cpu().numpy() for metric in average_meters]
+        return [metric.val.item() for metric in average_meters]
 
     def save_checkpoint(
         self,
