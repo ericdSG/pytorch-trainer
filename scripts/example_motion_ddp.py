@@ -26,7 +26,7 @@ from trainer.train import Trainer
 
 logger = logging.getLogger(__name__)
 configure_logger()
-logging.getLogger("torch").setLevel(logging.WARNING)
+logging.getLogger("torch").setLevel(logging.WARNING)  # ignore DDP info
 
 
 def parse_config() -> DictConfig:
@@ -39,7 +39,7 @@ def parse_config() -> DictConfig:
 
     else:  # compose with Hydra
         with initialize("../config", None):
-            yaml = compose("example_motion")
+            yaml = compose("example_motion_ddp")
 
     return validate_config(yaml)
 
@@ -54,11 +54,10 @@ def ddp_setup(rank: int, world_size: int) -> None:
     os.environ["MASTER_PORT"] = "12355"
     init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
+    # TODO: only log from the main process
+
 
 def main(rank: int, cfg: DictConfig) -> None:
-
-    # only log from the main subprocess
-    logger.setLevel(logging.INFO if rank == 0 else logging.WARNING)
 
     # configure current worker within the DistributedDataParallel context
     ddp_setup(rank, cfg.cuda.num_gpus)
@@ -109,6 +108,7 @@ def main(rank: int, cfg: DictConfig) -> None:
     predictions = trainer.predict(t_dl, test=True)
     logger.info(f"{len(predictions)} predictions collected")
 
+    # terminate DDP worker
     destroy_process_group()
 
 

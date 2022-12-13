@@ -53,7 +53,7 @@ class Trainer:
         # path for checkpoints
         experiment_dir = self.cfg.checkpoint_dir / self.cfg.experiment
         self.checkpoint_dir = (
-            experiment_dir / self.model.__class__.__name__.lower()
+            experiment_dir / self.model.module.__class__.__name__.lower()
         )
 
         # training
@@ -112,7 +112,7 @@ class Trainer:
         train: bool,
     ) -> None:
 
-        x, y = x.to(self.cfg.device), y.to(self.cfg.device)
+        x, y = x.to(self.rank), y.to(self.rank)
 
         # automatic mixed precision (amp)
         with torch.cuda.amp.autocast():
@@ -153,18 +153,18 @@ class Trainer:
         self.model.train() if train else self.model.eval()
 
         # wrap DataLoader iterable in a progress bar
-        pbar = progress_bar(dl, leave=False)
+        # pbar = progress_bar(dl, leave=False)
 
         if test:
-            return [self.model(x.to(self.cfg.device)).detach() for x, _ in pbar]
+            return [self.model(x.to(self.cfg.device)).detach() for x, _ in dl]
 
         # collect metric averages
         average_meters = [AverageMeter() for _ in self.metrics]
 
-        for x, y in pbar:
+        for x, y in dl:
             # update the AverageMeters with scores from current batch
             self._run_batch(x, y, average_meters, train)
-            pbar.comment = ""
+            # pbar.comment = ""
 
         return [metric.val.detach().cpu().numpy() for metric in average_meters]
 

@@ -34,5 +34,5 @@ Clone the repo, navigate to the top-level directory, and:
 
 - [x] Automatic Mixed Precision
 - [ ] Add TensorBoard support
-- [ ] Add `DistributedDataParallel` support
+- [x] Add `DistributedDataParallel` support
 - [ ] Containerize with Docker

@@ -10,7 +10,7 @@ checkpoint_dir: ${repo_dir}/checkpoints
 cuda:
   num_gpus: -1
 
-experiment: motion
+experiment: motion_ddp
 
 num_workers: 0
 
