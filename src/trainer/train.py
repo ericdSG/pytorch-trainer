@@ -190,6 +190,7 @@ class Trainer:
         self.model.load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         self.lr_scheduler.load_state_dict(checkpoint["scheduler_state"])
+        self.scaler.load_state_dict(checkpoint["scaler_state"])
 
         logger.info(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
 
