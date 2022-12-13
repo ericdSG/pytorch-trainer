@@ -19,24 +19,14 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from MLtools.utils.logging import configure_logger
-from trainer.config import type_validate_config
+from trainer.config import validate_config
 from trainer.data import get_dl
 from trainer.models import LSTM
 from trainer.train import Trainer
 
 logger = logging.getLogger(__name__)
 configure_logger()
-
-
-def ddp_setup(rank, world_size):
-    """
-    Args:
-        rank: Unique identifier of each process
-        world_size: Total number of processes
-    """
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
-    init_process_group(backend="nccl", rank=rank, world_size=world_size)
+logging.getLogger("torch").setLevel(logging.WARNING)
 
 
 def parse_config() -> DictConfig:
@@ -51,11 +41,26 @@ def parse_config() -> DictConfig:
         with initialize("../config", None):
             yaml = compose("example_motion")
 
-    return type_validate_config(yaml)
+    return validate_config(yaml)
+
+
+def ddp_setup(rank: int, world_size: int) -> None:
+    """
+    Args:
+        rank: Unique identifier of each process
+        world_size: Total number of processes
+    """
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
+    init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
 
 def main(rank: int, cfg: DictConfig) -> None:
 
+    # only log from the main subprocess
+    logger.setLevel(logging.INFO if rank == 0 else logging.WARNING)
+
+    # configure current worker within the DistributedDataParallel context
     ddp_setup(rank, cfg.cuda.num_gpus)
 
     # create PyTorch DataLoaders
@@ -86,7 +91,7 @@ def main(rank: int, cfg: DictConfig) -> None:
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
     # collect model components into a Trainer objects
-    trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics)
+    trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, rank)
 
     logger.info("Training")
     trainer.train()
@@ -112,6 +117,7 @@ if __name__ == "__main__":
     cfg = parse_config()
 
     try:
+        # create a separate subprocess for each GPU
         mp.spawn(main, args=([cfg]), nprocs=cfg.cuda.num_gpus)
 
     except (KeyboardInterrupt, Exception):

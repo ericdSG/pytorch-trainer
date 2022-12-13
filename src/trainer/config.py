@@ -82,18 +82,18 @@ def validate_device(cfg: DictConfig) -> DictConfig:
 
         total_gpus = torch.cuda.device_count()
 
-        if cfg.cuda.num_gpus == -1:
+        if cfg.cuda.num_gpus < 0:
             with open_dict(cfg):
                 cfg.cuda.num_gpus = total_gpus
 
-        logger.info(
-            f"Requested {cfg.cuda.num_gpus} of {total_gpus} available GPUs"
-        )
+        log = f"Requested {cfg.cuda.num_gpus} of {total_gpus} available GPUs"
 
-        if cfg.cuda.num_gpus > 1:
-            logger.warning(f"DistributedDataParallel not yet supported")
-            logger.warning(f"Resuming with 1 GPU")
-            cfg.cuda.num_gpus = 1
+        if cfg.cuda.num_gpus > total_gpus:
+            logger.warning(log)
+            logger.warning(f"Resuming with {total_gpus} GPU")
+            cfg.cuda.num_gpus = total_gpus
+        else:
+            logger.info(log)
 
     # create cfg.device based on the values specified in cfg.cuda
     with open_dict(cfg):
@@ -101,7 +101,7 @@ def validate_device(cfg: DictConfig) -> DictConfig:
 
     if cfg.device == "cpu":
         logger.error("Trainer assumes GPU-based training")
-        logger.error("To use CPU, remove support for mixed precision")
+        logger.error("To use CPU, remove DDP and mixed precision")
         exit(1)
 
     cuda = f"cuda (num_gpus={cfg.cuda.num_gpus})"

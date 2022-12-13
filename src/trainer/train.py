@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Union
+from typing import Any, Callable
 
 import torch
 from fastprogress import progress_bar
@@ -37,6 +37,7 @@ class Trainer:
         t_dl: DataLoader,
         v_dl: DataLoader,
         metrics: list[Callable],
+        rank: int = 0,
     ) -> None:
 
         self.cfg = cfg
@@ -45,6 +46,7 @@ class Trainer:
         self.t_dl = t_dl
         self.v_dl = v_dl
         self.metrics = metrics
+        self.rank = rank
 
         logger.info(f"Monitoring {self.metrics[0].__class__.__name__}")
 
@@ -77,7 +79,10 @@ class Trainer:
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
             train_metrics = self.predict(self.t_dl, train=True)
+            torch.distributed.barrier()  # wait for all GPUs
+
             valid_metrics = self.predict(self.v_dl)
+            torch.distributed.barrier()  # wait for all GPUs
 
             # determine whether model performance has improved in this epoch
             is_best = valid_metrics[0] > self.best_val_loss
@@ -99,12 +104,50 @@ class Trainer:
         logger.info(f"Training completed")
         self.close()
 
+    def _run_batch(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        meters: list[AverageMeter],
+        train: bool,
+    ) -> None:
+
+        x, y = x.to(self.cfg.device), y.to(self.cfg.device)
+
+        # automatic mixed precision (amp)
+        with torch.cuda.amp.autocast():
+
+            # forward pass
+            y_hat = self.model(x)
+
+            # the first metric in the list is the loss function
+            batch_metrics = [metric(y_hat, y) for metric in self.metrics]
+
+            if train:
+                self.scaler.scale(batch_metrics[0]).backward()  # amp
+                self.optimizer.zero_grad()
+                self.scaler.step(self.optimizer)  # amp
+                self.lr_scheduler.step()
+                self.scaler.update()  # amp
+
+            for i, m in enumerate(meters):
+                m.update(batch_metrics[i])
+
     def predict(
         self,
         dl: DataLoader,
         train: bool = False,
         test: bool = False,
-    ) -> Union[list[float], list[torch.Tensor]]:
+    ) -> list[float] | list[torch.Tensor]:
+
+        """
+        In distributed mode, calling the set_epoch() method at the beginning
+        of each epoch before creating the DataLoader iterator is necessary to
+        make shuffling work properly across multiple epochs. Otherwise, the
+        same ordering will be always used. Source:
+        https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
+        """
+        # dl.sampler.set_epoch(epochs[0])
 
         # switch off grad engine if applicable
         self.model.train() if train else self.model.eval()
@@ -119,28 +162,8 @@ class Trainer:
         average_meters = [AverageMeter() for _ in self.metrics]
 
         for x, y in pbar:
-
-            x, y = x.to(self.cfg.device), y.to(self.cfg.device)
-
-            # automatic mixed precision (amp)
-            with torch.cuda.amp.autocast():
-
-                # forward pass
-                y_hat = self.model(x)
-
-                # the first metric in the list is the loss function
-                batch_metrics = [metric(y_hat, y) for metric in self.metrics]
-
-                if train:
-                    self.scaler.scale(batch_metrics[0]).backward()  # amp
-                    self.optimizer.zero_grad()
-                    self.scaler.step(self.optimizer)  # amp
-                    self.lr_scheduler.step()
-                    self.scaler.update()  # amp
-
-                for i, m in enumerate(average_meters):
-                    m.update(batch_metrics[i])
-
+            # update the AverageMeters with scores from current batch
+            self._run_batch(x, y, average_meters, train)
             pbar.comment = ""
 
         return [metric.val.detach().cpu().numpy() for metric in average_meters]
@@ -156,6 +179,10 @@ class Trainer:
         Serialize a PyTorch model with its associated parameters as a
         checkpoint dict object.
         """
+
+        # only save the checkpoint from the main process
+        if self.rank != 0:
+            return
 
         # keys expected by load_checkpoint()
         REQUIRED_KEYS = {
