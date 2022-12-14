@@ -81,35 +81,6 @@ class Trainer:
             raise NotImplementedError(f'Trainer `comp` must be "lt" or "gt"')
         return compare(epoch_loss, best_loss)
 
-    def train(self, resume: bool = False) -> None:
-
-        if resume:
-            self.load_checkpoint(best=False)
-
-        for epoch in range(self.start_epoch, self.cfg.train.epochs):
-
-            train_metrics = self.predict(self.t_dl, train=True)
-            valid_metrics = self.predict(self.v_dl)
-
-            # determine whether model performance has improved in this epoch
-            is_best = self._compare(valid_metrics[0], self.best_loss)
-
-            # save model parameters and metadata
-            self.save_checkpoint(
-                {
-                    "epoch": epoch + 1,  # add 1 to set start_epoch if resuming
-                    "metrics": self.metrics,
-                    "model_state": self.model.state_dict(),
-                    "optimizer_state": self.optimizer.state_dict(),
-                    "scheduler_state": self.lr_scheduler.state_dict(),
-                    "scaler_state": self.scaler.state_dict(),
-                },
-                is_best=is_best,
-            )
-
-        logger.info(f"Training completed")
-        self.close()
-
     def _run_batch(
         self,
         x: torch.Tensor,
@@ -203,6 +174,35 @@ class Trainer:
             metric.val.item() if isinstance(metric.val, torch.Tensor) else 0.0
             for metric in average_meters
         ]
+
+    def train(self, resume: bool = False) -> None:
+
+        if resume:
+            self.load_checkpoint(best=False)
+
+        for epoch in range(self.start_epoch, self.cfg.train.epochs):
+
+            train_metrics = self.predict(self.t_dl, train=True)
+            valid_metrics = self.predict(self.v_dl)
+
+            # determine whether model performance has improved in this epoch
+            is_best = self._compare(valid_metrics[0], self.best_loss)
+
+            # save model parameters and metadata
+            self.save_checkpoint(
+                {
+                    "epoch": epoch + 1,  # add 1 to set start_epoch if resuming
+                    "metrics": self.metrics,
+                    "model_state": self.model.state_dict(),
+                    "optimizer_state": self.optimizer.state_dict(),
+                    "scheduler_state": self.lr_scheduler.state_dict(),
+                    "scaler_state": self.scaler.state_dict(),
+                },
+                is_best=is_best,
+            )
+
+        logger.info(f"Training completed")
+        self.close()
 
     def save_checkpoint(
         self,
