@@ -21,6 +21,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 
 from .metrics import AverageMeter
+from .utils import strip_module_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +54,10 @@ class Trainer:
 
         # path for checkpoints
         experiment_dir = self.cfg.checkpoint_dir / self.cfg.experiment
-        self.checkpoint_dir = (
-            experiment_dir / self.model.module.__class__.__name__.lower()
-        )
+        self.checkpoint_dir = experiment_dir / dir(self.cfg.arch)[0]
 
         # training
-        self.start_epoch = 0
+        self.start_epoch = self.current_epoch = 0
         self.best_loss = torch.inf if self.comparison == "lt" else -torch.inf
         self.optimizer = self.optimizer
         self.lr_scheduler = OneCycleLR(
@@ -91,10 +90,12 @@ class Trainer:
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
             train_metrics = self.predict(self.t_dl, train=True)
-            torch.distributed.barrier()  # wait for all GPUs
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()  # wait for all GPUs
 
             valid_metrics = self.predict(self.v_dl)
-            torch.distributed.barrier()  # wait for all GPUs
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()  # wait for all GPUs
 
             # determine whether model performance has improved in this epoch
             is_best = self._compare(valid_metrics[0], self.best_loss)
@@ -158,7 +159,8 @@ class Trainer:
         same ordering will be always used. Source:
         https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
         """
-        # dl.sampler.set_epoch(epochs[0])
+        # if torch.distributed.is_initialized():
+        #     dl.sampler.set_epoch(self.current_epoch)
 
         # switch off grad engine if applicable
         self.model.train() if train else self.model.eval()
@@ -221,6 +223,10 @@ class Trainer:
 
         logger.info(f"Loading {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path)
+
+        # models trained with DDP are incompatible with non-DDP models
+        if not torch.distributed.is_initialized():
+            strip_module_prefix(checkpoint)
 
         # load variables from checkpoint
         self.start_epoch = checkpoint["epoch"]

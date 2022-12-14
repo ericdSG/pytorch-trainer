@@ -60,7 +60,8 @@ def ddp_setup(rank: int, world_size: int) -> None:
 def main(rank: int, cfg: DictConfig) -> None:
 
     # configure current worker within the DistributedDataParallel context
-    ddp_setup(rank, cfg.cuda.num_gpus)
+    if cfg.cuda.num_gpus > 1:
+        ddp_setup(rank, cfg.cuda.num_gpus)
 
     # create PyTorch DataLoaders
     t_dl, v_dl = get_dl(
@@ -76,7 +77,10 @@ def main(rank: int, cfg: DictConfig) -> None:
         out_features=t_dl.dataset[0][1].data.shape[-1],
         **cfg.arch.lstm,  # unpack the rest of the hyperparams as kwargs
     )
-    model = DDP(model.to(rank), device_ids=[rank])
+    if torch.distributed.is_initialized():
+        model = DDP(model.to(rank), device_ids=[rank])
+    else:
+        model = model.to(rank)
 
     # instantiate optimizer
     optimizer = torch.optim.AdamW(
@@ -109,7 +113,8 @@ def main(rank: int, cfg: DictConfig) -> None:
     logger.info(f"{len(predictions)} predictions collected")
 
     # terminate DDP worker
-    destroy_process_group()
+    if torch.distributed.is_initialized():
+        destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -117,8 +122,10 @@ if __name__ == "__main__":
     cfg = parse_config()
 
     try:
-        # create a separate subprocess for each GPU
-        mp.spawn(main, args=([cfg]), nprocs=cfg.cuda.num_gpus)
+        if cfg.cuda.num_gpus <= 1:
+            main(rank=cfg.cuda.visible_devices[0], cfg=cfg)
+        else:
+            mp.spawn(main, args=([cfg]), nprocs=cfg.cuda.num_gpus)
 
     except (KeyboardInterrupt, Exception):
         logger.exception("")
