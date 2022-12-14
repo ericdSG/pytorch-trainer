@@ -96,8 +96,8 @@ class Trainer:
             with torch.cuda.amp.autocast():
 
                 # forward pass
-                # eval occurs on rank 0 only; model.module gets non-replicated model
                 if not train and torch.distributed.is_initialized():
+                    # eval occurs on rank 0 only: get non-replicated model
                     y_hat = self.model.module(x)
                 else:
                     y_hat = self.model(x)
@@ -240,12 +240,12 @@ class Trainer:
 
         # only need to log the checkpoint path relative to repository root
         abbrev_checkpoint_path = "/".join(str(checkpoint_path).split("/")[-4:])
-        logger.info(f"Loading {abbrev_checkpoint_path}")
+        logger.debug(f"Loading {abbrev_checkpoint_path}")
         checkpoint = torch.load(checkpoint_path)
 
         # models trained with DDP are incompatible with non-DDP models
-        if not torch.distributed.is_initialized():
-            strip_module_prefix(checkpoint)
+        # if not torch.distributed.is_initialized():
+        #     strip_module_prefix(checkpoint)
 
         # load variables from checkpoint
         self.start_epoch = checkpoint["epoch"]

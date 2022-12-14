@@ -50,8 +50,6 @@ def ddp_setup(rank: int, world_size: int) -> None:
     os.environ["MASTER_PORT"] = "12355"
     init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
-    # TODO: only log from the main process
-
 
 def main(rank: int, cfg: DictConfig) -> None:
 
@@ -88,7 +86,7 @@ def main(rank: int, cfg: DictConfig) -> None:
     # define regression metrics to track; loss must be first
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
-    # collect model components into a Trainer objects
+    # collect model components into a Trainer object
     logger.info("Training")
     trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, rank)
     trainer.train()
