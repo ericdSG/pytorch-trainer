@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Tuple
 
 import numpy as np
 import torch
@@ -131,7 +131,7 @@ class Trainer:
         dl: DataLoader,
         train: bool = False,
         test: bool = False,
-    ) -> list[float] | list[torch.Tensor]:
+    ) -> list[float] | list[Tuple[torch.Tensor, str]]:
 
         """
         In distributed mode, calling the set_epoch() method at the beginning
@@ -150,7 +150,9 @@ class Trainer:
         # pbar = progress_bar(dl, leave=False)
 
         if test:
-            return [self.model(x.to(self.cfg.device)).detach() for x, _ in dl]
+            preds = [self.model(x.to(self.rank)).detach() for x, _ in dl]
+            utt_ids = [Path(path).stem for path in dl.dataset.labels]
+            return [(pred, utt_id) for pred, utt_id in zip(preds, utt_ids)]
 
         # collect metric averages
         average_meters = [AverageMeter() for _ in self.metrics]
@@ -193,7 +195,7 @@ class Trainer:
                 is_best=is_best,
             )
 
-        logger.info(f"Training completed")
+        logger.debug(f"Training completed")
         self.close()
 
     def save_checkpoint(
@@ -236,7 +238,9 @@ class Trainer:
 
     def load_checkpoint(self, checkpoint_path: Path) -> None:
 
-        logger.info(f"Loading {checkpoint_path}")
+        # only need to log the checkpoint path relative to repository root
+        abbrev_checkpoint_path = "/".join(str(checkpoint_path).split("/")[-4:])
+        logger.info(f"Loading {abbrev_checkpoint_path}")
         checkpoint = torch.load(checkpoint_path)
 
         # models trained with DDP are incompatible with non-DDP models
@@ -251,7 +255,7 @@ class Trainer:
         self.lr_scheduler.load_state_dict(checkpoint["scheduler_state"])
         self.scaler.load_state_dict(checkpoint["scaler_state"])
 
-        logger.info(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
+        logger.debug(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
 
     def close(self) -> None:
         """

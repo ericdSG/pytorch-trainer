@@ -46,7 +46,6 @@ class Data:
 
 @dataclass
 class Test:
-    batch_size: int
     data: Data
 
 
@@ -95,11 +94,7 @@ def validate_device(cfg: DictConfig) -> DictConfig:
         else:
             logger.info(log)
 
-    # create cfg.device based on the values specified in cfg.cuda
-    with open_dict(cfg):
-        cfg.device = "cuda" if cfg.cuda.num_gpus > 0 else "cpu"
-
-    if cfg.device == "cpu":
+    if cfg.cuda.num_gpus == 0:
         logger.error("Trainer assumes GPU-based training")
         logger.error("To use CPU, remove DDP and mixed precision")
         exit(1)

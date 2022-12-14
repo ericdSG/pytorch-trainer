@@ -12,10 +12,19 @@ from MLtools.AudioLoader.src.transforms import KaldiFbankTransform
 logger = logging.getLogger(__name__)
 
 
+def get_classes(rts_paths: list[str]) -> set[str]:
+    classes = set()
+    for rts in rts_paths:
+        with open(rts) as f:
+            f.readline()  # skip frame rate
+            classes = classes | set(f.readline().strip().split(","))
+    return classes
+
+
 def get_dl(
     x_dir: Path,
     y_dir: Path,
-    batch_size: int,
+    batch_size: int = 1,
     valid: bool = False,
 ) -> Union[DataLoader, Tuple[DataLoader, DataLoader]]:
 
@@ -24,10 +33,7 @@ def get_dl(
     wav_paths = sorted([str(path) for path in Path(x_dir).glob("*.wav")])
     rts_paths = sorted([str(path) for path in Path(y_dir).glob("*.rts")])
 
-    classes = set()
-    for rts in rts_paths:
-        with open(rts) as f:
-            classes = classes | set(f.readline().strip().split(","))
+    classes = get_classes(rts_paths)
 
     al = AudioLoader()
     al.load_audio(wav_paths, cache=False)

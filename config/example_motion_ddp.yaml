@@ -19,7 +19,6 @@ repo_dir: ${oc.env:HOME}/pytorch-trainer
 seed: 0
 
 test:
-  batch_size: 1
   data:
     x_dir: ${train.data.x_dir}
     y_dir: ${train.data.y_dir}
