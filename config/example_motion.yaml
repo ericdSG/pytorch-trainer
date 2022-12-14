@@ -10,7 +10,7 @@ checkpoint_dir: ${repo_dir}/checkpoints
 cuda:
   num_gpus: -1
 
-experiment: motion
+experiment: motion_ddp
 
 num_workers: 0
 
@@ -19,10 +19,9 @@ repo_dir: ${oc.env:HOME}/pytorch-trainer
 seed: 0
 
 test:
-  batch_size: 1
   data:
-    x_dir: ${repo_dir}/src/MLtools/AudioLoader/tests/data/motion_wav
-    y_dir: ${repo_dir}/src/MLtools/AudioLoader/tests/data/motion_rts
+    x_dir: ${train.data.x_dir}
+    y_dir: ${train.data.y_dir}
 
 train:
   batch_size: 8

@@ -1,7 +1,6 @@
 """
-A PyTorch training loop template, implemented to mimic the functionality of
-the previously used FastAI training loop, including some of its defaults,
-callbacks, and metrics.
+A PyTorch training loop template with built-in support for
+DistributedDataParallel and automatic mixed precision.
 
 Created: Nov 2022 by Piotr Ozimek
 Updated: Dec 2022 by Eric DeMattos
@@ -10,16 +9,19 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Union
+from typing import Any, Callable, Tuple
 
+import numpy as np
 import torch
 from fastprogress import progress_bar
 from omegaconf import DictConfig
 from torch.cuda.amp import GradScaler
+from torch.distributed.algorithms.join import Join
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 
 from .metrics import AverageMeter
+from .utils import strip_module_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,8 @@ class Trainer:
         t_dl: DataLoader,
         v_dl: DataLoader,
         metrics: list[Callable],
+        rank: int = 0,
+        comparison: str = "lt",  # {"lt", "gt"}
     ) -> None:
 
         self.cfg = cfg
@@ -45,19 +49,16 @@ class Trainer:
         self.t_dl = t_dl
         self.v_dl = v_dl
         self.metrics = metrics
-
-        logger.info(f"Monitoring {self.metrics[0].__class__.__name__}")
+        self.rank = rank
+        self.comparison = comparison
 
         # path for checkpoints
         experiment_dir = self.cfg.checkpoint_dir / self.cfg.experiment
-        self.checkpoint_dir = (
-            experiment_dir / self.model.__class__.__name__.lower()
-        )
+        self.checkpoint_dir = experiment_dir / dir(self.cfg.arch)[0]
 
         # training
-        self.start_epoch = 0
-        self.best_val_loss = 0.0
-        self.optimizer = self.optimizer
+        self.start_epoch = self.current_epoch = 0
+        self.best_loss = torch.inf if self.comparison == "lt" else -torch.inf
         self.lr_scheduler = OneCycleLR(
             self.optimizer,
             self.cfg.train.lr,
@@ -68,6 +69,105 @@ class Trainer:
 
         # list of objects that need to be closed at the end of training
         self.closable = []
+
+    def _compare(self, epoch_loss, best_loss):
+        if self.comparison == "lt":
+            compare = np.less
+            self.best_loss = min(epoch_loss, best_loss)
+        elif self.comparison == "gt":
+            compare = np.greater
+            self.best_loss = max(epoch_loss, best_loss)
+        else:
+            raise NotImplementedError(f'Trainer `comp` must be "lt" or "gt"')
+        return compare(epoch_loss, best_loss)
+
+    def _run_batches(
+        self,
+        dl: DataLoader,
+        meters: list[AverageMeter],
+        train: bool,
+    ) -> None:
+
+        for x, y in dl:
+
+            x, y = x.to(self.rank), y.to(self.rank)
+
+            # automatic mixed precision (amp)
+            with torch.cuda.amp.autocast():
+
+                # forward pass
+                # eval occurs on rank 0 only; model.module gets non-replicated model
+                if not train and torch.distributed.is_initialized():
+                    y_hat = self.model.module(x)
+                else:
+                    y_hat = self.model(x)
+
+                # the first metric in the list is the loss function
+                batch_metrics = [metric(y_hat, y) for metric in self.metrics]
+
+                if train:
+                    self.scaler.scale(batch_metrics[0]).backward()  # amp
+                    self.scaler.step(self.optimizer)  # amp
+                    self.scaler.update()  # amp
+                    self.lr_scheduler.step()
+                    self.optimizer.zero_grad()
+
+                for i, m in enumerate(meters):
+                    m.update(batch_metrics[i])
+
+            # pbar.comment = ""
+
+    def _predict(self, *args) -> None:
+        # use context manager necessary for variable-length batches with DDP
+        # Source: https://pytorch.org/tutorials/advanced/generic_join.html
+        if torch.distributed.is_initialized():
+            with Join([self.model]):
+                self._run_batches(*args)
+        else:
+            self._run_batches(*args)
+
+    def predict(
+        self,
+        dl: DataLoader,
+        train: bool = False,
+        test: bool = False,
+    ) -> list[float] | list[Tuple[torch.Tensor, str]]:
+
+        """
+        In distributed mode, calling the set_epoch() method at the beginning
+        of each epoch before creating the DataLoader iterator is necessary to
+        make shuffling work properly across multiple epochs. Otherwise, the
+        same ordering will be always used. Source:
+        https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
+        """
+        # if torch.distributed.is_initialized():
+        #     dl.sampler.set_epoch(self.current_epoch)
+
+        # switch off grad engine if applicable
+        self.model.train() if train else self.model.eval()
+
+        # wrap DataLoader iterable in a progress bar
+        # pbar = progress_bar(dl, leave=False)
+
+        if test:
+            preds = [self.model(x.to(self.rank)).detach() for x, _ in dl]
+            utt_ids = [Path(path).stem for path in dl.dataset.labels]
+            return [(pred, utt_id) for pred, utt_id in zip(preds, utt_ids)]
+
+        # collect metric averages
+        average_meters = [AverageMeter() for _ in self.metrics]
+
+        self._predict(dl, average_meters, train)
+
+        # wait for all GPU processes to finish
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        # valid metrics do not exist on rank >= 1, default to 0.0
+        return [
+            metric.val.item() if isinstance(metric.val, torch.Tensor) else 0.0
+            for metric in average_meters
+        ]
 
     def train(self, resume: bool = False) -> None:
 
@@ -80,8 +180,7 @@ class Trainer:
             valid_metrics = self.predict(self.v_dl)
 
             # determine whether model performance has improved in this epoch
-            is_best = valid_metrics[0] > self.best_val_loss
-            self.best_val_loss = max(valid_metrics[0], self.best_val_loss)
+            is_best = self._compare(valid_metrics[0], self.best_loss)
 
             # save model parameters and metadata
             self.save_checkpoint(
@@ -96,54 +195,8 @@ class Trainer:
                 is_best=is_best,
             )
 
-        logger.info(f"Training completed")
+        logger.debug(f"Training completed")
         self.close()
-
-    def predict(
-        self,
-        dl: DataLoader,
-        train: bool = False,
-        test: bool = False,
-    ) -> Union[list[float], list[torch.Tensor]]:
-
-        # switch off grad engine if applicable
-        self.model.train() if train else self.model.eval()
-
-        # wrap DataLoader iterable in a progress bar
-        pbar = progress_bar(dl, leave=False)
-
-        if test:
-            return [self.model(x.to(self.cfg.device)).detach() for x, _ in pbar]
-
-        # collect metric averages
-        average_meters = [AverageMeter() for _ in self.metrics]
-
-        for x, y in pbar:
-
-            x, y = x.to(self.cfg.device), y.to(self.cfg.device)
-
-            # automatic mixed precision (amp)
-            with torch.cuda.amp.autocast():
-
-                # forward pass
-                y_hat = self.model(x)
-
-                # the first metric in the list is the loss function
-                batch_metrics = [metric(y_hat, y) for metric in self.metrics]
-
-                if train:
-                    self.scaler.scale(batch_metrics[0]).backward()  # amp
-                    self.optimizer.zero_grad()
-                    self.scaler.step(self.optimizer)  # amp
-                    self.lr_scheduler.step()
-                    self.scaler.update()  # amp
-
-                for i, m in enumerate(average_meters):
-                    m.update(batch_metrics[i])
-
-            pbar.comment = ""
-
-        return [metric.val.detach().cpu().numpy() for metric in average_meters]
 
     def save_checkpoint(
         self,
@@ -156,6 +209,10 @@ class Trainer:
         Serialize a PyTorch model with its associated parameters as a
         checkpoint dict object.
         """
+
+        # only save the checkpoint from the main process
+        if self.rank != 0:
+            return
 
         # keys expected by load_checkpoint()
         REQUIRED_KEYS = {
@@ -181,8 +238,14 @@ class Trainer:
 
     def load_checkpoint(self, checkpoint_path: Path) -> None:
 
-        logger.info(f"Loading {checkpoint_path}")
+        # only need to log the checkpoint path relative to repository root
+        abbrev_checkpoint_path = "/".join(str(checkpoint_path).split("/")[-4:])
+        logger.info(f"Loading {abbrev_checkpoint_path}")
         checkpoint = torch.load(checkpoint_path)
+
+        # models trained with DDP are incompatible with non-DDP models
+        if not torch.distributed.is_initialized():
+            strip_module_prefix(checkpoint)
 
         # load variables from checkpoint
         self.start_epoch = checkpoint["epoch"]
@@ -192,7 +255,7 @@ class Trainer:
         self.lr_scheduler.load_state_dict(checkpoint["scheduler_state"])
         self.scaler.load_state_dict(checkpoint["scaler_state"])
 
-        logger.info(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
+        logger.debug(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
 
     def close(self) -> None:
         """
@@ -200,7 +263,3 @@ class Trainer:
         """
         for obj in self.closable:
             obj.close()
-
-
-if __name__ == "__main__":
-    raise NotImplementedError("train.py should not be run directly")

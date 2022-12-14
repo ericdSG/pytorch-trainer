@@ -1,23 +1,28 @@
 #!/usr/bin/env python
-
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
 import torch
+import torch.multiprocessing as mp
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
+from torch.distributed import destroy_process_group, init_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from MLtools.utils.logging import configure_logger
 from trainer.config import validate_config
 from trainer.data import get_dl
+from trainer.evaluate import Evaluator
 from trainer.models import LSTM
 from trainer.train import Trainer
 
 logger = logging.getLogger(__name__)
-configure_logger()
+configure_logger(multiprocessing=True)
+logging.getLogger("torch").setLevel(logging.WARNING)  # ignore DDP info
 
 
 def parse_config() -> DictConfig:
@@ -35,9 +40,25 @@ def parse_config() -> DictConfig:
     return validate_config(yaml)
 
 
-def main(cfg: DictConfig) -> None:
+def ddp_setup(rank: int, world_size: int) -> None:
+    """
+    Args:
+        rank: Unique identifier of each process
+        world_size: Total number of processes
+    """
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
+    init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
-    # create PyTorch DataLoaders
+    # TODO: only log from the main process
+
+
+def main(rank: int, cfg: DictConfig) -> None:
+
+    # configure current worker within the DistributedDataParallel context
+    ddp_setup(rank, cfg.cuda.num_gpus)
+
+    # create DataLoaders
     t_dl, v_dl = get_dl(
         cfg.train.data.x_dir,
         cfg.train.data.y_dir,
@@ -45,13 +66,16 @@ def main(cfg: DictConfig) -> None:
         valid=True,
     )
 
-    # instantiate PyTorch model
+    # instantiate model
     model = LSTM(
         input_size=t_dl.dataset[0][0].shape[-1],
         out_features=t_dl.dataset[0][1].data.shape[-1],
         **cfg.arch.lstm,  # unpack the rest of the hyperparams as kwargs
-    )
-    model.to(cfg.device)
+    ).to(rank)
+
+    # clone model across all GPUs, if applicable
+    if torch.distributed.is_initialized():
+        model = DDP(model, device_ids=[rank])
 
     # instantiate optimizer
     optimizer = torch.optim.AdamW(
@@ -64,24 +88,19 @@ def main(cfg: DictConfig) -> None:
     # define regression metrics to track; loss must be first
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
-    # collect model components into a Trainer object
-    trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics)
-
+    # collect model components into a Trainer objects
     logger.info("Training")
+    trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, rank)
     trainer.train()
 
-    # create PyTorch DataLoader for inference
-    t_dl = get_dl(
-        cfg.test.data.x_dir,
-        cfg.test.data.y_dir,
-        batch_size=cfg.test.batch_size,
-    )
+    logger.info("Evaluating")
+    t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
+    evaluator = Evaluator(cfg, trainer, t_dl, rank)
+    evaluator.evaluate(model="checkpoint_best.pth")
 
-    logger.info("Running model in inference mode")
-    logger.info(f"Predicting {len(t_dl)} samples")
-    trainer.load_checkpoint(trainer.checkpoint_dir / "checkpoint_best.pth")
-    predictions = trainer.predict(t_dl, test=True)
-    logger.info(f"{len(predictions)} predictions collected")
+    # terminate DDP worker
+    if torch.distributed.is_initialized():
+        destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -89,7 +108,10 @@ if __name__ == "__main__":
     cfg = parse_config()
 
     try:
-        main(cfg)
+        # if cfg.cuda.num_gpus <= 1:
+        #     main(rank=cfg.cuda.visible_devices[0], cfg=cfg)
+        # else:
+        mp.spawn(main, args=([cfg]), nprocs=cfg.cuda.num_gpus)
 
     except (KeyboardInterrupt, Exception):
         logger.exception("")
