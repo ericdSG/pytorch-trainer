@@ -1,7 +1,6 @@
 """
-A PyTorch training loop template, implemented to mimic the functionality of
-the previously used FastAI training loop, including some of its defaults,
-callbacks, and metrics.
+A PyTorch training loop template with built-in support for
+DistributedDataParallel and automatic mixed precision.
 
 Created: Nov 2022 by Piotr Ozimek
 Updated: Dec 2022 by Eric DeMattos
@@ -17,6 +16,7 @@ import torch
 from fastprogress import progress_bar
 from omegaconf import DictConfig
 from torch.cuda.amp import GradScaler
+from torch.distributed.algorithms.join import Join
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 
@@ -59,7 +59,6 @@ class Trainer:
         # training
         self.start_epoch = self.current_epoch = 0
         self.best_loss = torch.inf if self.comparison == "lt" else -torch.inf
-        self.optimizer = self.optimizer
         self.lr_scheduler = OneCycleLR(
             self.optimizer,
             self.cfg.train.lr,
@@ -90,12 +89,7 @@ class Trainer:
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
             train_metrics = self.predict(self.t_dl, train=True)
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()  # wait for all GPUs
-
             valid_metrics = self.predict(self.v_dl)
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()  # wait for all GPUs
 
             # determine whether model performance has improved in this epoch
             is_best = self._compare(valid_metrics[0], self.best_loss)
@@ -130,7 +124,11 @@ class Trainer:
         with torch.cuda.amp.autocast():
 
             # forward pass
-            y_hat = self.model(x)
+            # eval occurs on rank 0 only; model.module gets non-replicated model
+            if not train and torch.distributed.is_initialized():
+                y_hat = self.model.module(x)
+            else:
+                y_hat = self.model(x)
 
             # the first metric in the list is the loss function
             batch_metrics = [metric(y_hat, y) for metric in self.metrics]
@@ -144,6 +142,26 @@ class Trainer:
 
             for i, m in enumerate(meters):
                 m.update(batch_metrics[i])
+
+    def _run_batches(
+        self,
+        dl: DataLoader,
+        meters: list[AverageMeter],
+        train: bool,
+    ) -> None:
+        # update the AverageMeters with scores from current batch
+        for x, y in dl:
+            self._run_batch(x, y, meters, train)
+            # pbar.comment = ""
+
+    def _predict(self, *args) -> None:
+        # use context manager necessary for variable-length batches with DDP
+        # Source: https://pytorch.org/tutorials/advanced/generic_join.html
+        if torch.distributed.is_initialized():
+            with Join([self.model]):
+                self._run_batches(*args)
+        else:
+            self._run_batches(*args)
 
     def predict(
         self,
@@ -174,12 +192,17 @@ class Trainer:
         # collect metric averages
         average_meters = [AverageMeter() for _ in self.metrics]
 
-        for x, y in dl:
-            # update the AverageMeters with scores from current batch
-            self._run_batch(x, y, average_meters, train)
-            # pbar.comment = ""
+        self._predict(dl, average_meters, train)
 
-        return [metric.val.item() for metric in average_meters]
+        # wait for all GPU processes to finish
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        # valid metrics do not exist on rank >= 1, default to 0.0
+        return [
+            metric.val.item() if isinstance(metric.val, torch.Tensor) else 0.0
+            for metric in average_meters
+        ]
 
     def save_checkpoint(
         self,
@@ -244,7 +267,3 @@ class Trainer:
         """
         for obj in self.closable:
             obj.close()
-
-
-if __name__ == "__main__":
-    raise NotImplementedError("train.py should not be run directly")
