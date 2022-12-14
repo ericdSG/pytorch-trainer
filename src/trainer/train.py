@@ -81,48 +81,40 @@ class Trainer:
             raise NotImplementedError(f'Trainer `comp` must be "lt" or "gt"')
         return compare(epoch_loss, best_loss)
 
-    def _run_batch(
-        self,
-        x: torch.Tensor,
-        y: torch.Tensor,
-        meters: list[AverageMeter],
-        train: bool,
-    ) -> None:
-
-        x, y = x.to(self.rank), y.to(self.rank)
-
-        # automatic mixed precision (amp)
-        with torch.cuda.amp.autocast():
-
-            # forward pass
-            # eval occurs on rank 0 only; model.module gets non-replicated model
-            if not train and torch.distributed.is_initialized():
-                y_hat = self.model.module(x)
-            else:
-                y_hat = self.model(x)
-
-            # the first metric in the list is the loss function
-            batch_metrics = [metric(y_hat, y) for metric in self.metrics]
-
-            if train:
-                self.scaler.scale(batch_metrics[0]).backward()  # amp
-                self.scaler.step(self.optimizer)  # amp
-                self.scaler.update()  # amp
-                self.lr_scheduler.step()
-                self.optimizer.zero_grad()
-
-            for i, m in enumerate(meters):
-                m.update(batch_metrics[i])
-
     def _run_batches(
         self,
         dl: DataLoader,
         meters: list[AverageMeter],
         train: bool,
     ) -> None:
-        # update the AverageMeters with scores from current batch
+
         for x, y in dl:
-            self._run_batch(x, y, meters, train)
+
+            x, y = x.to(self.rank), y.to(self.rank)
+
+            # automatic mixed precision (amp)
+            with torch.cuda.amp.autocast():
+
+                # forward pass
+                # eval occurs on rank 0 only; model.module gets non-replicated model
+                if not train and torch.distributed.is_initialized():
+                    y_hat = self.model.module(x)
+                else:
+                    y_hat = self.model(x)
+
+                # the first metric in the list is the loss function
+                batch_metrics = [metric(y_hat, y) for metric in self.metrics]
+
+                if train:
+                    self.scaler.scale(batch_metrics[0]).backward()  # amp
+                    self.scaler.step(self.optimizer)  # amp
+                    self.scaler.update()  # amp
+                    self.lr_scheduler.step()
+                    self.optimizer.zero_grad()
+
+                for i, m in enumerate(meters):
+                    m.update(batch_metrics[i])
+
             # pbar.comment = ""
 
     def _predict(self, *args) -> None:
