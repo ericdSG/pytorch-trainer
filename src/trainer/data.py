@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Tuple
 
 from torch.utils.data import DataLoader
 
@@ -26,7 +26,7 @@ def get_dl(
     y_dir: Path,
     batch_size: int = 1,
     valid: bool = False,
-) -> Union[DataLoader, Tuple[DataLoader, DataLoader]]:
+) -> DataLoader | Tuple[DataLoader, DataLoader]:
 
     logging.debug("Creating DataLoader(s)")
 

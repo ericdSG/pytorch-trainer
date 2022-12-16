@@ -13,16 +13,15 @@ from omegaconf import DictConfig, OmegaConf
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from MLtools.utils.logging import configure_logger
 from trainer.config import validate_config
 from trainer.data import get_dl
 from trainer.evaluate import Evaluator
 from trainer.models import LSTM
 from trainer.train import Trainer
 
+log_cfg = Path(__file__).parent.resolve().parent / "logging.ini"
+logging.config.fileConfig(log_cfg, disable_existing_loggers=False)
 logger = logging.getLogger(__name__)
-configure_logger(multiprocessing=True)
-logging.getLogger("torch").setLevel(logging.WARNING)  # ignore DDP info
 
 
 def parse_config() -> DictConfig:
@@ -40,7 +39,7 @@ def parse_config() -> DictConfig:
     return validate_config(yaml)
 
 
-def ddp_setup(rank: int, world_size: int) -> None:
+def ddp_setup(rank: int, cfg: DictConfig) -> None:
     """
     Args:
         rank: Unique identifier of each process
@@ -48,13 +47,21 @@ def ddp_setup(rank: int, world_size: int) -> None:
     """
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"
-    init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    init_process_group(backend="nccl", rank=rank, world_size=cfg.cuda.num_gpus)
+
+    # reset file handler in append mode for each subprocess
+    file_handler = logging.FileHandler(filename=cfg.log, mode="a")
+    # get format from dummy NullHandler
+    file_handler.setFormatter(logging.root.handlers[-1].formatter)
+    logging.getLogger().addHandler(file_handler)
+    logging.logMultiprocessing = False
 
 
 def main(rank: int, cfg: DictConfig) -> None:
 
     # configure current worker within the DistributedDataParallel context
-    ddp_setup(rank, cfg.cuda.num_gpus)
+    if not torch.multiprocessing.current_process().name == "MainProcess":
+        ddp_setup(rank, cfg)
 
     # create DataLoaders
     t_dl, v_dl = get_dl(
@@ -106,10 +113,11 @@ if __name__ == "__main__":
     cfg = parse_config()
 
     try:
-        # if cfg.cuda.num_gpus <= 1:
-        #     main(rank=cfg.cuda.visible_devices[0], cfg=cfg)
-        # else:
-        mp.spawn(main, args=([cfg]), nprocs=cfg.cuda.num_gpus)
+
+        if cfg.debug:  # cannot use breakpoints in distributed environment
+            main(rank=cfg.cuda.visible_devices[0], cfg=cfg)
+        else:
+            mp.spawn(main, args=([cfg]), nprocs=cfg.cuda.num_gpus)
 
     except (KeyboardInterrupt, Exception):
         logger.exception("")

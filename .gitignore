@@ -1,5 +1,5 @@
 # Trainer
-checkpoints/
+experiments/
 
 # PyTorch
 *.pth

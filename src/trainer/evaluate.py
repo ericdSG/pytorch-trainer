@@ -54,8 +54,8 @@ class Evaluator:
 
     def evaluate(self, model: str) -> None:
 
-        self.trainer.load_checkpoint(self.trainer.checkpoint_dir / model)
-
+        # load model and run inference on test data
+        self.trainer.load_checkpoint(self.trainer.cfg.experiment_dir / model)
         predictions, utt_ids = zip(*self.trainer.predict(self.dl, test=True))
 
         # parallelization no longer needed; only run eval from main process
@@ -71,7 +71,7 @@ class Evaluator:
 
         am = AnimationMetric(str(rts_ref_dir), str(temp_out_dir))
         am.compute_metric()
-        am.print_results(level="set")
+        am.log(level="set")
 
         # clean up
         shutil.rmtree(temp_out_dir)

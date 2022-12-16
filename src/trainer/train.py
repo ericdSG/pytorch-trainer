@@ -25,6 +25,15 @@ from .utils import strip_module_prefix
 
 logger = logging.getLogger(__name__)
 
+REQUIRED_CHECKPOINT_KEYS = [
+    "epoch",
+    "metrics",
+    "model_state",
+    "optimizer_state",
+    "scheduler_state",
+    "scaler_state",
+]
+
 
 class Trainer:
     """
@@ -52,10 +61,6 @@ class Trainer:
         self.rank = rank
         self.comparison = comparison
 
-        # path for checkpoints
-        experiment_dir = self.cfg.checkpoint_dir / self.cfg.experiment
-        self.checkpoint_dir = experiment_dir / dir(self.cfg.arch)[0]
-
         # training
         self.start_epoch = self.current_epoch = 0
         self.best_loss = torch.inf if self.comparison == "lt" else -torch.inf
@@ -66,11 +71,16 @@ class Trainer:
             steps_per_epoch=len(self.t_dl),
         )
         self.scaler = GradScaler()  # automatic mixed precision
+        self.metric_averages = [AverageMeter() for _ in self.metrics]
 
         # list of objects that need to be closed at the end of training
         self.closable = []
 
     def _compare(self, epoch_loss, best_loss):
+        """
+        Determine whether validation loss has improved for current epoch. For
+        metrics that increase (i.e. accuracy), set Trainer comparison="gt"
+        """
         if self.comparison == "lt":
             compare = np.less
             self.best_loss = min(epoch_loss, best_loss)
@@ -78,15 +88,10 @@ class Trainer:
             compare = np.greater
             self.best_loss = max(epoch_loss, best_loss)
         else:
-            raise NotImplementedError(f'Trainer `comp` must be "lt" or "gt"')
+            raise NotImplementedError(f'`comparison` must be "lt" or "gt"')
         return compare(epoch_loss, best_loss)
 
-    def _run_batches(
-        self,
-        dl: DataLoader,
-        meters: list[AverageMeter],
-        train: bool,
-    ) -> None:
+    def _run_batches(self, dl: DataLoader, train: bool) -> None:
 
         for x, y in dl:
 
@@ -112,19 +117,19 @@ class Trainer:
                     self.lr_scheduler.step()
                     self.optimizer.zero_grad()
 
-                for i, m in enumerate(meters):
+                for i, m in enumerate(self.metric_averages):
                     m.update(batch_metrics[i])
 
             # pbar.comment = ""
 
-    def _predict(self, *args) -> None:
+    def _predict(self, *args, **kwargs) -> None:
         # use context manager necessary for variable-length batches with DDP
         # Source: https://pytorch.org/tutorials/advanced/generic_join.html
         if torch.distributed.is_initialized():
             with Join([self.model]):
-                self._run_batches(*args)
+                self._run_batches(*args, **kwargs)
         else:
-            self._run_batches(*args)
+            self._run_batches(*args, **kwargs)
 
     def predict(
         self,
@@ -154,10 +159,8 @@ class Trainer:
             utt_ids = [Path(path).stem for path in dl.dataset.labels]
             return [(pred, utt_id) for pred, utt_id in zip(preds, utt_ids)]
 
-        # collect metric averages
-        average_meters = [AverageMeter() for _ in self.metrics]
-
-        self._predict(dl, average_meters, train)
+        # update metric averages
+        self._predict(dl, train=train)
 
         # wait for all GPU processes to finish
         if torch.distributed.is_initialized():
@@ -165,8 +168,8 @@ class Trainer:
 
         # valid metrics do not exist on rank >= 1, default to 0.0
         return [
-            metric.val.item() if isinstance(metric.val, torch.Tensor) else 0.0
-            for metric in average_meters
+            metric.avg.item() if isinstance(metric.avg, torch.Tensor) else 0.0
+            for metric in self.metric_averages
         ]
 
     def train(self, resume: bool = False) -> None:
@@ -176,6 +179,8 @@ class Trainer:
 
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
+            self.current_epoch = epoch
+
             train_metrics = self.predict(self.t_dl, train=True)
             valid_metrics = self.predict(self.v_dl)
 
@@ -183,26 +188,14 @@ class Trainer:
             is_best = self._compare(valid_metrics[0], self.best_loss)
 
             # save model parameters and metadata
-            self.save_checkpoint(
-                {
-                    "epoch": epoch + 1,  # add 1 to set start_epoch if resuming
-                    "metrics": self.metrics,
-                    "model_state": self.model.state_dict(),
-                    "optimizer_state": self.optimizer.state_dict(),
-                    "scheduler_state": self.lr_scheduler.state_dict(),
-                    "scaler_state": self.scaler.state_dict(),
-                },
-                is_best=is_best,
-            )
+            self.save_checkpoint(is_best=is_best)
 
         logger.debug(f"Training completed")
         self.close()
 
     def save_checkpoint(
         self,
-        checkpoint: dict[str, Any],
         name: str = "checkpoint",
-        checkpoint_dir: Path | None = None,
         is_best: bool = False,
     ) -> None:
         """
@@ -210,31 +203,24 @@ class Trainer:
         checkpoint dict object.
         """
 
-        # only save the checkpoint from the main process
-        if self.rank != 0:
+        if self.rank != 0:  # only save the checkpoint from the main process
             return
 
-        # keys expected by load_checkpoint()
-        REQUIRED_KEYS = {
-            "epoch",
-            "metrics",
-            "model_state",
-            "optimizer_state",
-            "scheduler_state",
-            "scaler_state",
+        checkpoint = {
+            "epoch": self.current_epoch + 1,  # add 1 for start_epoch if resume
+            "metrics": self.metrics,
+            "model_state": self.model.state_dict(),
+            "optimizer_state": self.optimizer.state_dict(),
+            "scheduler_state": self.lr_scheduler.state_dict(),
+            "scaler_state": self.scaler.state_dict(),
         }
-        assert (
-            checkpoint.keys() >= REQUIRED_KEYS
-        ), f"Checkpoint dict must contain {REQUIRED_KEYS}"
 
-        # determine the path to save the checkpoint
-        checkpoint_dir = checkpoint_dir or self.checkpoint_dir
-        checkpoint_dir.mkdir(exist_ok=True, parents=True)
+        missing_keys = sorted(REQUIRED_CHECKPOINT_KEYS - checkpoint.keys())
+        assert not missing_keys, f"{missing_keys} must be saved to checkpoint"
 
-        torch.save(checkpoint, checkpoint_dir / f"{name}.pth")
-
+        torch.save(checkpoint, self.cfg.experiment_dir / f"{name}.pth")
         if is_best:
-            torch.save(checkpoint, checkpoint_dir / f"{name}_best.pth")
+            torch.save(checkpoint, self.cfg.experiment_dir / f"{name}_best.pth")
 
     def load_checkpoint(self, checkpoint_path: Path) -> None:
 
@@ -244,16 +230,18 @@ class Trainer:
         checkpoint = torch.load(checkpoint_path)
 
         # models trained with DDP are incompatible with non-DDP models
-        # if not torch.distributed.is_initialized():
-        #     strip_module_prefix(checkpoint)
+        if not torch.distributed.is_initialized():
+            strip_module_prefix(checkpoint)
 
         # load variables from checkpoint
-        self.start_epoch = checkpoint["epoch"]
-        self.metrics = checkpoint["metrics"]
-        self.model.load_state_dict(checkpoint["model_state"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
-        self.lr_scheduler.load_state_dict(checkpoint["scheduler_state"])
-        self.scaler.load_state_dict(checkpoint["scaler_state"])
+        keys = REQUIRED_CHECKPOINT_KEYS
+        self.start_epoch = checkpoint[keys.pop(0)]
+        self.metrics = checkpoint[keys.pop(0)]
+        self.model.load_state_dict(checkpoint[keys.pop(0)])
+        self.optimizer.load_state_dict(checkpoint[keys.pop(0)])
+        self.lr_scheduler.load_state_dict(checkpoint[keys.pop(0)])
+        self.scaler.load_state_dict(checkpoint[keys.pop(0)])
+        assert not keys, f"{keys} not loaded from checkpoint"
 
         logger.debug(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
 

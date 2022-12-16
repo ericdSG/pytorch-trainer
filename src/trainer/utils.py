@@ -11,6 +11,7 @@ def param_count(module: torch.nn.Module) -> int:
 
 def set_global_seed(seed: int) -> None:
     """
+    Doesn't really work, I fear.
     https://pytorch.org/docs/stable/notes/randomness.html
     """
     np.random.seed(seed)

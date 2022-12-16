@@ -1,18 +1,22 @@
 arch:
   lstm:
+    bidirectional: False
+    dropout: 0.0
     hidden_size: 64
     num_layers: 1
-    dropout: 0.0
-    bidirectional: False
-
-checkpoint_dir: ${repo_dir}/checkpoints
 
 cuda:
   num_gpus: -1
 
 experiment: motion
 
+experiment_dir: ${repo_dir}/experiments/${experiment}/${pop:${oc.dict.keys:arch}}
+
+log: ${experiment_dir}/train.log
+
 num_workers: 0
+
+overwrite: True
 
 repo_dir: ${oc.env:HOME}/pytorch-trainer
 
