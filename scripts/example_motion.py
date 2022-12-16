@@ -53,8 +53,9 @@ def ddp_setup(rank: int, cfg: DictConfig) -> None:
     file_handler = logging.FileHandler(filename=cfg.log, mode="a")
     # get format from dummy NullHandler
     file_handler.setFormatter(logging.root.handlers[-1].formatter)
+    file_handler.setLevel(logging.INFO if rank == 0 else logging.WARNING)
     logging.getLogger().addHandler(file_handler)
-    logging.logMultiprocessing = False
+    logger.setLevel(logging.INFO if rank == 0 else logging.WARNING)
 
 
 def main(rank: int, cfg: DictConfig) -> None:
@@ -98,10 +99,14 @@ def main(rank: int, cfg: DictConfig) -> None:
     trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, rank)
     trainer.train()
 
-    logger.info("Evaluating")
-    t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
-    evaluator = Evaluator(cfg, trainer, t_dl, rank)
-    evaluator.evaluate(model="checkpoint_best.pth")
+    # run eval from main process only
+    if rank == 0:
+        logger.info("Evaluating")
+        t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
+        evaluator = Evaluator(cfg, trainer, t_dl)
+        evaluator.evaluate(model="checkpoint_best.pth")
+        if torch.distributed.is_initialized():
+            logging.info("All processes completed; releasing resources...")
 
     # terminate DDP worker
     if torch.distributed.is_initialized():

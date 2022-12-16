@@ -206,10 +206,15 @@ class Trainer:
         if self.rank != 0:  # only save the checkpoint from the main process
             return
 
+        if torch.distributed.is_initialized():
+            state_dict = self.model.module.state_dict()
+        else:
+            state_dict = self.model.state_dict()
+
         checkpoint = {
             "epoch": self.current_epoch + 1,  # add 1 for start_epoch if resume
             "metrics": self.metrics,
-            "model_state": self.model.state_dict(),
+            "model_state": state_dict,
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": self.lr_scheduler.state_dict(),
             "scaler_state": self.scaler.state_dict(),
@@ -237,7 +242,10 @@ class Trainer:
         keys = REQUIRED_CHECKPOINT_KEYS
         self.start_epoch = checkpoint[keys.pop(0)]
         self.metrics = checkpoint[keys.pop(0)]
-        self.model.load_state_dict(checkpoint[keys.pop(0)])
+        if torch.distributed.is_initialized():
+            self.model.module.load_state_dict(checkpoint[keys.pop(0)])
+        else:
+            self.model.load_state_dict(checkpoint[keys.pop(0)])
         self.optimizer.load_state_dict(checkpoint[keys.pop(0)])
         self.lr_scheduler.load_state_dict(checkpoint[keys.pop(0)])
         self.scaler.load_state_dict(checkpoint[keys.pop(0)])

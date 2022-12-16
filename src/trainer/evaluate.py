@@ -27,12 +27,10 @@ class Evaluator:
         cfg: DictConfig,
         trainer: Trainer,
         dl: DataLoader,
-        rank: int = 0,
     ) -> None:
         self.cfg = cfg
         self.trainer = trainer
         self.dl = dl
-        self.rank = rank
 
     def _write_temp_rts(
         self,
@@ -57,10 +55,6 @@ class Evaluator:
         # load model and run inference on test data
         self.trainer.load_checkpoint(self.trainer.cfg.experiment_dir / model)
         predictions, utt_ids = zip(*self.trainer.predict(self.dl, test=True))
-
-        # parallelization no longer needed; only run eval from main process
-        if self.rank != 0:
-            return
 
         rts_ref_dir = self.cfg.train.data.y_dir
         temp_out_dir = rts_ref_dir.parent / "eval"
