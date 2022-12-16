@@ -19,7 +19,7 @@ from trainer.evaluate import Evaluator
 from trainer.models import LSTM
 from trainer.train import Trainer
 
-log_cfg = Path(__file__).parent.resolve().parent / "logging.ini"
+log_cfg = Path(__file__).parent.resolve().parent / "log.ini"
 logging.config.fileConfig(log_cfg, disable_existing_loggers=False)
 logger = logging.getLogger(__name__)
 
