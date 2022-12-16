@@ -21,7 +21,6 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 
 from .metrics import AverageMeter
-from .utils import strip_module_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -181,22 +180,19 @@ class Trainer:
 
             self.current_epoch = epoch
 
-            train_metrics = self.predict(self.t_dl, train=True)
-            valid_metrics = self.predict(self.v_dl)
-
-            # determine whether model performance has improved in this epoch
-            is_best = self._compare(valid_metrics[0], self.best_loss)
+            _ = self.predict(self.t_dl, train=True)
+            val_loss, _ = self.predict(self.v_dl)
 
             # save model parameters and metadata
-            self.save_checkpoint(is_best=is_best)
+            self.save_checkpoint(val_loss)
 
         logger.debug(f"Training completed")
         self.close()
 
     def save_checkpoint(
         self,
+        val_loss: float,
         name: str = "checkpoint",
-        is_best: bool = False,
     ) -> None:
         """
         Serialize a PyTorch model with its associated parameters as a
@@ -206,15 +202,16 @@ class Trainer:
         if self.rank != 0:  # only save the checkpoint from the main process
             return
 
+        # distributed models are wrapped in a DDP object
         if torch.distributed.is_initialized():
-            state_dict = self.model.module.state_dict()
+            model_state_dict = self.model.module.state_dict()
         else:
-            state_dict = self.model.state_dict()
+            model_state_dict = self.model.state_dict()
 
         checkpoint = {
             "epoch": self.current_epoch + 1,  # add 1 for start_epoch if resume
             "metrics": self.metrics,
-            "model_state": state_dict,
+            "model_state": model_state_dict,
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": self.lr_scheduler.state_dict(),
             "scaler_state": self.scaler.state_dict(),
@@ -224,19 +221,15 @@ class Trainer:
         assert not missing_keys, f"{missing_keys} must be saved to checkpoint"
 
         torch.save(checkpoint, self.cfg.experiment_dir / f"{name}.pth")
-        if is_best:
+
+        # determine whether model performance has improved in this epoch
+        if self._compare(val_loss, self.best_loss):
             torch.save(checkpoint, self.cfg.experiment_dir / f"{name}_best.pth")
 
     def load_checkpoint(self, checkpoint_path: Path) -> None:
 
-        # only need to log the checkpoint path relative to repository root
-        abbrev_checkpoint_path = "/".join(str(checkpoint_path).split("/")[-4:])
-        logger.debug(f"Loading {abbrev_checkpoint_path}")
+        logger.debug(f"Loading {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path)
-
-        # models trained with DDP are incompatible with non-DDP models
-        if not torch.distributed.is_initialized():
-            strip_module_prefix(checkpoint)
 
         # load variables from checkpoint
         keys = REQUIRED_CHECKPOINT_KEYS
