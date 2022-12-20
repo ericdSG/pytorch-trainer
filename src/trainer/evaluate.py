@@ -15,22 +15,24 @@ from torch.utils.data import DataLoader
 from MLtools.AnimationMetric.AnimationMetric import AnimationMetric
 from MLtools.CarnivalTools.carnival_tools import CarnivalRTS
 
+from .base import Base
 from .data import get_classes
-from .train import Trainer
 
 logger = logging.getLogger(__name__)
 
 
-class Evaluator:
+class Evaluator(Base):
     def __init__(
         self,
         cfg: DictConfig,
-        trainer: Trainer,
+        model: torch.nn.Module,
         dl: DataLoader,
+        rank: int = 0,
     ) -> None:
         self.cfg = cfg
-        self.trainer = trainer
+        self.model = model
         self.dl = dl
+        self.rank = rank
 
     def _write_temp_rts(
         self,
@@ -53,8 +55,8 @@ class Evaluator:
     def evaluate(self, model: str) -> None:
 
         # load model and run inference on test data
-        self.trainer.load_checkpoint(self.trainer.cfg.experiment_dir / model)
-        predictions, utt_ids = zip(*self.trainer.predict(self.dl, test=True))
+        self.load_checkpoint(self.cfg.experiment_dir / model)
+        predictions, utt_ids = zip(*self.predict(self.dl, test=True))
 
         rts_ref_dir = self.cfg.train.data.y_dir
         temp_out_dir = rts_ref_dir.parent / "eval"

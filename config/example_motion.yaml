@@ -8,6 +8,8 @@ arch:
 cuda:
   num_gpus: -1
 
+debug: True
+
 experiment: motion
 
 experiment_dir: ${repo_dir}/experiments/${experiment}/${pop:${oc.dict.keys:arch}}
