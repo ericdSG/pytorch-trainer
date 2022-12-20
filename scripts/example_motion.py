@@ -129,9 +129,9 @@ def main() -> None:
 
     cfg = parse_config()
 
-    if cfg.debug:  # cannot use breakpoints in distributed environment
+    if cfg.cuda.num_gpus == 1:
         train(rank=cfg.cuda.visible_devices[0], cfg=cfg)
-    else:  # create a subprocess for each GPU
+    else:
         mp.spawn(train, args=([cfg]), nprocs=cfg.cuda.num_gpus)
 
     # run evaluation from main process only

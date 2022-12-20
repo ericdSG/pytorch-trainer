@@ -122,11 +122,7 @@ class Trainer:
         else:
             self._run_batches(*args, **kwargs)
 
-    def predict(
-        self,
-        dl: DataLoader,
-        train: bool = False,
-    ) -> list[float] | list[Tuple[torch.Tensor, str]]:
+    def predict(self, dl: DataLoader, train: bool = False) -> list[float]:
 
         """
         In distributed mode, calling the set_epoch() method at the beginning

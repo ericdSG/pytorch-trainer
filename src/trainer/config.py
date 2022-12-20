@@ -67,7 +67,6 @@ class Schema:
     num_workers: int
     repo_dir: Path
     train: Train
-    debug: Optional[bool] = field(default=False)
     overwrite: Optional[bool] = field(default=False)
     seed: Optional[int] = field(default=None)
     test: Optional[Test] = field(default=None)
@@ -107,33 +106,35 @@ def configure_device(cfg: DictConfig) -> DictConfig:
 
         total_gpus = torch.cuda.device_count()
 
+        # determine the maximum amount of GPUs available, if desired by user
         if cfg.cuda.num_gpus < 0:
             OmegaConf.update(cfg, "cuda.num_gpus", total_gpus)
 
         log = f"Requested {cfg.cuda.num_gpus} of {total_gpus} available GPUs"
 
+        # user may have requested too many GPUs
         if cfg.cuda.num_gpus > total_gpus:
+            s = "s" if total_gpus > 1 else ""
             logger.warning(log)
-            logger.warning(f"Resuming with {total_gpus} GPU")
+            logger.warning(f"Resuming with {total_gpus} GPU{s}")
             OmegaConf.update(cfg, "cuda.num_gpus", total_gpus)
         else:
             logger.info(log)
 
-        if cfg.debug:
-            log = "Debug mode enabled"
-            if cfg.cuda.num_gpus > 1:
-                logger.warning(log)
-                logger.warning("Resuming with 1 GPU")
-                OmegaConf.update(cfg, "cuda.num_gpus", 1)
-            else:
-                logger.info(log)
+        # exclude GPUs that have not been made visible
+        if len(cfg.cuda.visible_devices) < cfg.cuda.num_gpus:
+            num_visible_gpus = len(cfg.cuda.visible_devices)
+            s = "s" if num_visible_gpus > 1 else ""
+            logger.warning(f"Only {num_visible_gpus} visible device{s}")
+            OmegaConf.update(cfg, "cuda.num_gpus", num_visible_gpus)
 
     if cfg.cuda.num_gpus == 0:
         logger.error("Trainer assumes GPU-based training")
         logger.error("To use CPU, remove DDP and mixed precision")
         exit(1)
 
-    cuda = f"cuda (num_gpus={cfg.cuda.num_gpus})"
+    devices = range(len(cfg.cuda.visible_devices))[: cfg.cuda.num_gpus]
+    cuda = ", ".join([f"cuda:{cfg.cuda.visible_devices[i]}" for i in devices])
     logger.info(f"Using {cuda if cfg.cuda.num_gpus > 0 else 'cpu'}")
 
     return cfg

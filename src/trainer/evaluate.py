@@ -7,6 +7,7 @@ Created: Dec 2022 by Eric DeMattos
 import logging
 import shutil
 from pathlib import Path
+from typing import Tuple
 
 import torch
 from omegaconf import DictConfig
@@ -26,7 +27,6 @@ class Evaluator:
         model: torch.nn.Module,
         dl: torch.utils.data.DataLoader,
         checkpoint: str,
-        rank: int = 0,
     ) -> None:
 
         logging.debug("Setting up Evaluator")
@@ -35,7 +35,7 @@ class Evaluator:
         self.model = model
         self.dl = dl
         self.checkpoint_path = self.cfg.experiment_dir / checkpoint
-        self.rank = rank
+        self.device = cfg.cuda.visible_devices[0]
 
     def _write_temp_rts(
         self,
@@ -55,11 +55,11 @@ class Evaluator:
             rts = CarnivalRTS.load_from_dict(dict(zip(classes, pred)))
             rts.save(out_dir / f"{utt_id}.rts")
 
-    def predict(self) -> None:
+    def predict(self) -> list[Tuple[torch.Tensor, str]]:
 
         self.model.eval()  # switch off grad engine
 
-        preds = [self.model(x.to(self.rank)).detach() for x, _ in self.dl]
+        preds = [self.model(x.to(self.device)).detach() for x, _ in self.dl]
         utt_ids = [Path(path).stem for path in self.dl.dataset.labels]
 
         return [(pred, utt_id) for pred, utt_id in zip(preds, utt_ids)]
