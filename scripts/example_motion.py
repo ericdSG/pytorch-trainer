@@ -125,20 +125,22 @@ def train(rank: int, cfg: DictConfig) -> None:
         destroy_process_group()
 
 
-if __name__ == "__main__":
+def main() -> None:
 
     cfg = parse_config()
 
+    if cfg.debug:  # cannot use breakpoints in distributed environment
+        train(rank=cfg.cuda.visible_devices[0], cfg=cfg)
+    else:  # create a subprocess for each GPU
+        mp.spawn(train, args=([cfg]), nprocs=cfg.cuda.num_gpus)
+
+    # run evaluation from main process only
+    evaluate(cfg=cfg)
+
+
+if __name__ == "__main__":
     try:
-
-        if cfg.debug:  # cannot use breakpoints in distributed environment
-            train(rank=cfg.cuda.visible_devices[0], cfg=cfg)
-        else:  # create a subprocess for each GPU
-            mp.spawn(train, args=([cfg]), nprocs=cfg.cuda.num_gpus)
-
-        # run evaluation from main process only
-        evaluate(cfg=cfg)
-
+        main()
     except (KeyboardInterrupt, Exception):
         logger.exception("")
         exit(1)
