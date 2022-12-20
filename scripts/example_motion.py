@@ -76,11 +76,11 @@ def initialize_lstm(
 
 def evaluate(cfg: DictConfig) -> None:
 
-    logger.info("Evaluating")
     t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
-    model = initialize_lstm(cfg, t_dl)
-    evaluator = Evaluator(cfg, model, t_dl)
-    evaluator.evaluate(model="checkpoint_best.pth")
+    model = initialize_lstm(cfg, t_dl).to(cfg.cuda.visible_devices[0])
+    evaluator = Evaluator(cfg, model, t_dl, checkpoint="checkpoint_best.pth")
+    logger.info("Evaluating")
+    evaluator.evaluate()
 
 
 def train(rank: int, cfg: DictConfig) -> None:
@@ -100,7 +100,7 @@ def train(rank: int, cfg: DictConfig) -> None:
     # instantiate model
     model = initialize_lstm(cfg, t_dl).to(rank)
 
-    # clone model across all GPUs, if applicable
+    # clone model across all GPUs
     if torch.distributed.is_initialized():
         model = DDP(model, device_ids=[rank])
 
@@ -116,14 +116,12 @@ def train(rank: int, cfg: DictConfig) -> None:
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
     # collect model components into a Trainer object
-    logger.info("Training")
     trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, rank)
+    logger.info("Training")
     trainer.train()
 
     # terminate DDP worker
     if torch.distributed.is_initialized():
-        if rank == 0:
-            logging.info("All processes completed; releasing resources...")
         destroy_process_group()
 
 
