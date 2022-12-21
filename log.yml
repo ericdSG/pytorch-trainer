@@ -1,0 +1,32 @@
+# this file was designed to be parsed/interpolated with OmegaConf
+
+version: 1
+disable_existing_loggers: False
+
+loggers:
+  root:
+    level: INFO
+    handlers: [richHandler, nullHandler]
+  torch:
+    level: WARNING # raise level to ignore unnecessary DDP info
+
+handlers:
+  richHandler: # pretty formatter for console (third-party)
+    class: rich.logging.RichHandler
+    omit_repeated_times: False
+    log_time_format: ${formatters.iso8601.datefmt}
+    rich_tracebacks: True
+    tracebacks_width: 80
+    tracebacks_extra_lines: 0
+    tracebacks_word_wrap: False
+    tracebacks_suppress:
+    - ${oc.env:CONDA_PREFIX}
+  nullHandler: # stores Formatter object for FileHandler
+    class: logging.NullHandler
+    formatter: iso8601
+  # FileHandler is configured in script with filename from config
+
+formatters:
+  iso8601:
+    format: "%(asctime)s %(levelname)-8s %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"

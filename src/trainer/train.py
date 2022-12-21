@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Tuple
+from typing import Callable
 
 import numpy as np
 import torch
-from fastprogress import progress_bar
 from omegaconf import DictConfig
 from torch.cuda.amp import GradScaler
 from torch.distributed.algorithms.join import Join
@@ -23,15 +22,6 @@ from torch.utils.data import DataLoader
 from .metrics import AverageMeter
 
 logger = logging.getLogger(__name__)
-
-REQUIRED_CHECKPOINT_KEYS = [
-    "epoch",
-    "metrics",
-    "model_state",
-    "optimizer_state",
-    "scheduler_state",
-    "scaler_state",
-]
 
 
 class Trainer:
@@ -50,6 +40,8 @@ class Trainer:
         rank: int = 0,
         comparison: str = "lt",  # {"lt", "gt"}
     ) -> None:
+
+        logging.debug("Setting up Trainer")
 
         self.cfg = cfg
         self.model = model
@@ -119,8 +111,6 @@ class Trainer:
                 for i, m in enumerate(self.metric_averages):
                     m.update(batch_metrics[i])
 
-            # pbar.comment = ""
-
     def _predict(self, *args, **kwargs) -> None:
         # use context manager necessary for variable-length batches with DDP
         # Source: https://pytorch.org/tutorials/advanced/generic_join.html
@@ -130,12 +120,7 @@ class Trainer:
         else:
             self._run_batches(*args, **kwargs)
 
-    def predict(
-        self,
-        dl: DataLoader,
-        train: bool = False,
-        test: bool = False,
-    ) -> list[float] | list[Tuple[torch.Tensor, str]]:
+    def predict(self, dl: DataLoader, train: bool = False) -> list[float]:
 
         """
         In distributed mode, calling the set_epoch() method at the beginning
@@ -150,14 +135,6 @@ class Trainer:
         # switch off grad engine if applicable
         self.model.train() if train else self.model.eval()
 
-        # wrap DataLoader iterable in a progress bar
-        # pbar = progress_bar(dl, leave=False)
-
-        if test:
-            preds = [self.model(x.to(self.rank)).detach() for x, _ in dl]
-            utt_ids = [Path(path).stem for path in dl.dataset.labels]
-            return [(pred, utt_id) for pred, utt_id in zip(preds, utt_ids)]
-
         # update metric averages
         self._predict(dl, train=train)
 
@@ -171,10 +148,11 @@ class Trainer:
             for metric in self.metric_averages
         ]
 
-    def train(self, resume: bool = False) -> None:
+    def train(self, checkpoint: str | None = None) -> None:
 
-        if resume:
-            self.load_checkpoint(best=False)
+        if checkpoint:
+            self.load_checkpoint(self.cfg.experiment_dir / checkpoint)
+            logging.info(f"Resuming from epoch {self.start_epoch}")
 
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
@@ -216,10 +194,6 @@ class Trainer:
             "scheduler_state": self.lr_scheduler.state_dict(),
             "scaler_state": self.scaler.state_dict(),
         }
-
-        missing_keys = sorted(REQUIRED_CHECKPOINT_KEYS - checkpoint.keys())
-        assert not missing_keys, f"{missing_keys} must be saved to checkpoint"
-
         torch.save(checkpoint, self.cfg.experiment_dir / f"{name}.pth")
 
         # determine whether model performance has improved in this epoch
@@ -232,19 +206,15 @@ class Trainer:
         checkpoint = torch.load(checkpoint_path)
 
         # load variables from checkpoint
-        keys = REQUIRED_CHECKPOINT_KEYS
-        self.start_epoch = checkpoint[keys.pop(0)]
-        self.metrics = checkpoint[keys.pop(0)]
+        self.start_epoch = checkpoint["epoch"]
+        self.metrics = checkpoint["metrics"]
         if torch.distributed.is_initialized():
-            self.model.module.load_state_dict(checkpoint[keys.pop(0)])
+            self.model.module.load_state_dict(checkpoint["model_state"])
         else:
-            self.model.load_state_dict(checkpoint[keys.pop(0)])
-        self.optimizer.load_state_dict(checkpoint[keys.pop(0)])
-        self.lr_scheduler.load_state_dict(checkpoint[keys.pop(0)])
-        self.scaler.load_state_dict(checkpoint[keys.pop(0)])
-        assert not keys, f"{keys} not loaded from checkpoint"
-
-        logger.debug(f"Loaded checkpoint @ epoch {checkpoint['epoch']}")
+            self.model.load_state_dict(checkpoint["model_state"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        self.lr_scheduler.load_state_dict(checkpoint["scheduler_state"])
+        self.scaler.load_state_dict(checkpoint["scaler_state"])
 
     def close(self) -> None:
         """

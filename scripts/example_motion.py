@@ -13,14 +13,15 @@ from omegaconf import DictConfig, OmegaConf
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from trainer.arch.lstm import LSTM
 from trainer.config import validate_config
-from trainer.data import get_dl
+from trainer.data.audioloader import get_dl
 from trainer.evaluate import Evaluator
-from trainer.models import LSTM
 from trainer.train import Trainer
 
-log_cfg = Path(__file__).parent.resolve().parent / "log.ini"
-logging.config.fileConfig(log_cfg, disable_existing_loggers=False)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+log_config = OmegaConf.to_object(OmegaConf.load(PROJECT_ROOT / "log.yml"))
+logging.config.dictConfig(log_config)
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +59,30 @@ def ddp_setup(rank: int, cfg: DictConfig) -> None:
     logger.setLevel(logging.INFO if rank == 0 else logging.WARNING)
 
 
-def main(rank: int, cfg: DictConfig) -> None:
+def initialize_lstm(
+    cfg: DictConfig,
+    dl: torch.utils.data.DataLoader,
+) -> torch.nn.Module:
+    """
+    Create LSTM with hyperparameters from config and input/output size from DL.
+    """
+    return LSTM(
+        input_size=dl.dataset[0][0].shape[-1],
+        out_features=dl.dataset[0][1].data.shape[-1],
+        **cfg.arch.lstm,  # unpack the hyperparams as kwargs
+    )
+
+
+def evaluate(cfg: DictConfig) -> None:
+
+    t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
+    model = initialize_lstm(cfg, t_dl).to(cfg.cuda.visible_devices[0])
+    evaluator = Evaluator(cfg, model, t_dl, checkpoint="checkpoint_best.pth")
+    logger.info("Evaluating")
+    evaluator.evaluate()
+
+
+def train(rank: int, cfg: DictConfig) -> None:
 
     # configure current worker within the DistributedDataParallel context
     if not torch.multiprocessing.current_process().name == "MainProcess":
@@ -73,13 +97,9 @@ def main(rank: int, cfg: DictConfig) -> None:
     )
 
     # instantiate model
-    model = LSTM(
-        input_size=t_dl.dataset[0][0].shape[-1],
-        out_features=t_dl.dataset[0][1].data.shape[-1],
-        **cfg.arch.lstm,  # unpack the rest of the hyperparams as kwargs
-    ).to(rank)
+    model = initialize_lstm(cfg, t_dl).to(rank)
 
-    # clone model across all GPUs, if applicable
+    # clone model across all GPUs
     if torch.distributed.is_initialized():
         model = DDP(model, device_ids=[rank])
 
@@ -95,35 +115,31 @@ def main(rank: int, cfg: DictConfig) -> None:
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
     # collect model components into a Trainer object
-    logger.info("Training")
     trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, rank)
+    logger.info("Training")
     trainer.train()
-
-    # run eval from main process only
-    if rank == 0:
-        logger.info("Evaluating")
-        t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
-        evaluator = Evaluator(cfg, trainer, t_dl)
-        evaluator.evaluate(model="checkpoint_best.pth")
-        if torch.distributed.is_initialized():
-            logging.info("All processes completed; releasing resources...")
 
     # terminate DDP worker
     if torch.distributed.is_initialized():
         destroy_process_group()
 
 
-if __name__ == "__main__":
+def main() -> None:
 
     cfg = parse_config()
 
+    if cfg.cuda.num_gpus == 1:
+        train(rank=cfg.cuda.visible_devices[0], cfg=cfg)
+    else:
+        mp.spawn(train, args=([cfg]), nprocs=cfg.cuda.num_gpus)
+
+    # run evaluation from main process only
+    evaluate(cfg=cfg)
+
+
+if __name__ == "__main__":
     try:
-
-        if cfg.debug:  # cannot use breakpoints in distributed environment
-            main(rank=cfg.cuda.visible_devices[0], cfg=cfg)
-        else:
-            mp.spawn(main, args=([cfg]), nprocs=cfg.cuda.num_gpus)
-
+        main()
     except (KeyboardInterrupt, Exception):
         logger.exception("")
         exit(1)
