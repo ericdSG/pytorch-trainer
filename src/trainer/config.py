@@ -32,7 +32,7 @@ class Arch:
 
 @dataclass
 class CUDA:
-    num_gpus: int
+    num_gpus: int  # negative number resolves to max number of GPUs available
     visible_devices: Optional[list[int]] = field(
         default_factory=lambda: [i for i in range(torch.cuda.device_count())]
     )  # expose all GPU devices by default
@@ -104,15 +104,13 @@ def configure_device(cfg: DictConfig) -> DictConfig:
 
     elif cfg.cuda.num_gpus != 0:
 
-        total_gpus = torch.cuda.device_count()
-
         # determine the maximum amount of GPUs available, if desired by user
+        total_gpus = torch.cuda.device_count()
         if cfg.cuda.num_gpus < 0:
             OmegaConf.update(cfg, "cuda.num_gpus", total_gpus)
 
-        log = f"Requested {cfg.cuda.num_gpus} of {total_gpus} available GPUs"
-
         # user may have requested too many GPUs
+        log = f"Requested {cfg.cuda.num_gpus} of {total_gpus} available GPUs"
         if cfg.cuda.num_gpus > total_gpus:
             s = "s" if total_gpus > 1 else ""
             logger.warning(log)

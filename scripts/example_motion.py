@@ -20,9 +20,8 @@ from trainer.models import LSTM
 from trainer.train import Trainer
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-logging.config.dictConfig(
-    OmegaConf.to_object(OmegaConf.load(PROJECT_ROOT / "log.yml"))
-)
+log_config = OmegaConf.to_object(OmegaConf.load(PROJECT_ROOT / "log.yml"))
+logging.config.dictConfig(log_config)
 logger = logging.getLogger(__name__)
 
 

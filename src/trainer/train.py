@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, Tuple
+from typing import Callable
 
 import numpy as np
 import torch
@@ -110,8 +110,6 @@ class Trainer:
 
                 for i, m in enumerate(self.metric_averages):
                     m.update(batch_metrics[i])
-
-            # pbar.comment = ""
 
     def _predict(self, *args, **kwargs) -> None:
         # use context manager necessary for variable-length batches with DDP

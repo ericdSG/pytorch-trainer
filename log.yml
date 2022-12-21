@@ -15,6 +15,12 @@ handlers:
     class: rich.logging.RichHandler
     omit_repeated_times: False
     log_time_format: ${formatters.iso8601.datefmt}
+    rich_tracebacks: True
+    tracebacks_width: 80
+    tracebacks_extra_lines: 0
+    tracebacks_word_wrap: False
+    tracebacks_suppress:
+    - ${oc.env:CONDA_PREFIX}
   nullHandler: # stores Formatter object for FileHandler
     class: logging.NullHandler
     formatter: iso8601
