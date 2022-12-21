@@ -13,10 +13,10 @@ from omegaconf import DictConfig, OmegaConf
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from trainer.arch.lstm import LSTM
 from trainer.config import validate_config
-from trainer.data import get_dl
+from trainer.data.audioloader import get_dl
 from trainer.evaluate import Evaluator
-from trainer.models import LSTM
 from trainer.train import Trainer
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

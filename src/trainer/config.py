@@ -5,14 +5,14 @@ Source: https://omegaconf.readthedocs.io/en/latest/structured_config.html
 Created: Dec 2022 by Eric DeMattos
 """
 import logging
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
-
-from .utils import set_global_seed
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +173,10 @@ def validate_config(cfg: DictConfig) -> DictConfig:
     cfg = configure_device(cfg)
 
     if cfg.seed is not None:
-        set_global_seed(cfg.seed)
+        # https://pytorch.org/docs/stable/notes/randomness.html
+        np.random.seed(cfg.seed)
+        random.seed(cfg.seed)
+        torch.manual_seed(cfg.seed)
 
     # write the final interpolated config file to experiment directory
     cfg_dict = _convert_path_to_str(OmegaConf.to_container(cfg, resolve=True))

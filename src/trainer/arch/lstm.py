@@ -2,7 +2,7 @@ import logging
 
 import torch
 
-from .utils import param_count
+from .modules import param_count
 
 logger = logging.getLogger(__name__)
 

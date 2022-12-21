@@ -15,7 +15,7 @@ from omegaconf import DictConfig
 from MLtools.AnimationMetric.AnimationMetric import AnimationMetric
 from MLtools.CarnivalTools.carnival_tools import CarnivalRTS
 
-from .data import get_classes
+from .data.audioloader import get_classes
 
 logger = logging.getLogger(__name__)
 
