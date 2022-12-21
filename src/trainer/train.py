@@ -122,15 +122,9 @@ class Trainer:
 
     def predict(self, dl: DataLoader, train: bool = False) -> list[float]:
 
-        """
-        In distributed mode, calling the set_epoch() method at the beginning
-        of each epoch before creating the DataLoader iterator is necessary to
-        make shuffling work properly across multiple epochs. Otherwise, the
-        same ordering will be always used. Source:
-        https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
-        """
-        # if torch.distributed.is_initialized():
-        #     dl.sampler.set_epoch(self.current_epoch)
+        # update DistributedGroupSampler epoch for shuffling to work
+        if torch.distributed.is_initialized():
+            dl.batch_sampler.set_epoch(self.current_epoch)
 
         # switch off grad engine if applicable
         self.model.train() if train else self.model.eval()
@@ -158,18 +152,20 @@ class Trainer:
 
             self.current_epoch = epoch
 
-            _ = self.predict(self.t_dl, train=True)
-            val_loss, _ = self.predict(self.v_dl)
+            train_metrics = self.predict(self.t_dl, train=True)
+            valid_metrics = self.predict(self.v_dl)
+
+            is_best = self._compare(valid_metrics[0], self.best_loss)
 
             # save model parameters and metadata
-            self.save_checkpoint(val_loss)
+            self.save_checkpoint(is_best)
 
         logger.debug(f"Training completed")
         self.close()
 
     def save_checkpoint(
         self,
-        val_loss: float,
+        is_best: bool,
         name: str = "checkpoint",
     ) -> None:
         """
@@ -197,7 +193,7 @@ class Trainer:
         torch.save(checkpoint, self.cfg.experiment_dir / f"{name}.pth")
 
         # determine whether model performance has improved in this epoch
-        if self._compare(val_loss, self.best_loss):
+        if is_best:
             torch.save(checkpoint, self.cfg.experiment_dir / f"{name}_best.pth")
 
     def load_checkpoint(self, checkpoint_path: Path) -> None:

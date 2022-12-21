@@ -40,7 +40,8 @@ def get_dl(
     al.load_labels(rts_paths, cls=RTSBlock, classes=classes, cache=False)
 
     if valid:
-        al.split_by_valid_pct(0.1)
+        # seed required for deterministic shuffling across GPU processes
+        al.split_by_valid_pct(0.1, seed=0)
 
     al.add(transforms=[KaldiFbankTransform(num_mel_bins=40)])
     al.bs = batch_size
