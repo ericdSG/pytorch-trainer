@@ -163,11 +163,11 @@ def validate_config(cfg: DictConfig) -> DictConfig:
         logging.error(f"Experiment already exists at {cfg.experiment_dir}")
         exit(1)
 
-    # set up file handler with log file path from config
-    # will need to be reset in "a" mode after mp.spawn()
-    file_handler = logging.FileHandler(filename=cfg.log, mode="w")
-    file_handler.setFormatter(logging.root.handlers[-1].formatter)
-    logging.getLogger().addHandler(file_handler)
+    # # set up file handler with log file path from config
+    # # will need to be reset in "a" mode after mp.spawn()
+    # file_handler = logging.FileHandler(filename=cfg.log, mode="w")
+    # file_handler.setFormatter(logging.root.handlers[-1].formatter)
+    # logging.getLogger().addHandler(file_handler)
 
     # ensure GPU(s) is/are available
     cfg = configure_device(cfg)

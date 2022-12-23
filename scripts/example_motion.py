@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -10,12 +9,12 @@ import torch
 import torch.multiprocessing as mp
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
-from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from trainer.arch.lstm import LSTM
 from trainer.config import validate_config
 from trainer.data.audioloader import get_dl
+from trainer.distributed import train_ddp
 from trainer.evaluate import Evaluator
 from trainer.train import Trainer
 
@@ -40,53 +39,42 @@ def parse_config() -> DictConfig:
     return validate_config(yaml)
 
 
-def ddp_setup(rank: int, cfg: DictConfig) -> None:
-    """
-    Args:
-        rank: Unique identifier of each process
-        world_size: Total number of processes
-    """
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
-    init_process_group(backend="nccl", rank=rank, world_size=cfg.cuda.num_gpus)
-
-    # reset file handler in append mode for each subprocess
-    file_handler = logging.FileHandler(filename=cfg.log, mode="a")
-    # get format from dummy NullHandler
-    file_handler.setFormatter(logging.root.handlers[-1].formatter)
-    file_handler.setLevel(logging.INFO if rank == 0 else logging.WARNING)
-    logging.getLogger().addHandler(file_handler)
-    logger.setLevel(logging.INFO if rank == 0 else logging.WARNING)
-
-
 def initialize_lstm(
     cfg: DictConfig,
     dl: torch.utils.data.DataLoader,
+    rank: int,
 ) -> torch.nn.Module:
     """
     Create LSTM with hyperparameters from config and input/output size from DL.
     """
-    return LSTM(
+    model = LSTM(
         input_size=dl.dataset[0][0].shape[-1],
         out_features=dl.dataset[0][1].data.shape[-1],
         **cfg.arch.lstm,  # unpack the hyperparams as kwargs
-    )
+    ).to(rank)
+
+    # clone model across all GPUs
+    if torch.distributed.is_initialized():
+        model = DDP(model, device_ids=[rank])
+
+    return model
 
 
 def evaluate(cfg: DictConfig) -> None:
 
     t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
-    model = initialize_lstm(cfg, t_dl).to(cfg.cuda.visible_devices[0])
+    model = initialize_lstm(cfg, t_dl, cfg.cuda.visible_devices[0])
     evaluator = Evaluator(cfg, model, t_dl, checkpoint="checkpoint_best.pth")
     logger.info("Evaluating")
     evaluator.evaluate()
 
 
-def train(rank: int, cfg: DictConfig) -> None:
+def train(cfg: DictConfig, queue: mp.Queue | None = None, **kwargs) -> None:
 
-    # configure current worker within the DistributedDataParallel context
-    if not torch.multiprocessing.current_process().name == "MainProcess":
-        ddp_setup(rank, cfg)
+    if torch.distributed.is_initialized():
+        rank = torch.distributed.get_rank()
+    else:
+        rank = cfg.cuda.visible_devices[0]
 
     # create DataLoaders
     t_dl, v_dl = get_dl(
@@ -97,11 +85,7 @@ def train(rank: int, cfg: DictConfig) -> None:
     )
 
     # instantiate model
-    model = initialize_lstm(cfg, t_dl).to(rank)
-
-    # clone model across all GPUs
-    if torch.distributed.is_initialized():
-        model = DDP(model, device_ids=[rank])
+    model = initialize_lstm(cfg, t_dl, rank)
 
     # instantiate optimizer
     optimizer = torch.optim.AdamW(
@@ -115,26 +99,22 @@ def train(rank: int, cfg: DictConfig) -> None:
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
     # collect model components into a Trainer object
-    trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, rank)
+    trainer = Trainer(
+        cfg, model, optimizer, t_dl, v_dl, metrics, rank, queue=queue
+    )
     logger.info("Training")
     trainer.train()
-
-    # terminate DDP worker
-    if torch.distributed.is_initialized():
-        destroy_process_group()
 
 
 def main() -> None:
 
     cfg = parse_config()
 
-    if cfg.cuda.num_gpus == 1:
-        train(rank=cfg.cuda.visible_devices[0], cfg=cfg)
-    else:
-        mp.spawn(train, args=([cfg]), nprocs=cfg.cuda.num_gpus)
+    # set up DistributedDataParallel if more than one GPU requested
+    train_ddp(cfg, train) if cfg.cuda.num_gpus > 1 else train(cfg)
 
-    # run evaluation from main process only
-    evaluate(cfg=cfg)
+    # run evaluation with 1 GPU from main process only (for now?)
+    evaluate(cfg)
 
 
 if __name__ == "__main__":

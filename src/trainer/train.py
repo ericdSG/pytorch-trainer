@@ -39,6 +39,7 @@ class Trainer:
         metrics: list[Callable],
         rank: int = 0,
         comparison: str = "lt",  # {"lt", "gt"}
+        queue: torch.multiprocessing.Queue | None = None,
     ) -> None:
 
         logging.debug("Setting up Trainer")
@@ -51,6 +52,7 @@ class Trainer:
         self.metrics = metrics
         self.rank = rank
         self.comparison = comparison
+        self.queue = queue
 
         # training
         self.start_epoch = self.current_epoch = 0
@@ -84,7 +86,7 @@ class Trainer:
 
     def _run_batches(self, dl: DataLoader, train: bool) -> None:
 
-        for x, y in dl:
+        for batch_idx, (x, y) in enumerate(dl, start=1):
 
             x, y = x.to(self.rank), y.to(self.rank)
 
@@ -110,6 +112,12 @@ class Trainer:
 
                 for i, m in enumerate(self.metric_averages):
                     m.update(batch_metrics[i])
+
+                # propagate information to main process for pbar when using DDP
+                if self.queue:
+                    self.queue.put(
+                        (self.rank, batch_idx, len(dl), self.current_epoch + 1)
+                    )
 
     def _predict(self, *args, **kwargs) -> None:
         # use context manager necessary for variable-length batches with DDP
