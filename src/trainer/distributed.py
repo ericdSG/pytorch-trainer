@@ -1,95 +1,92 @@
+import logging
 import os
+from logging.handlers import QueueHandler, QueueListener
 from typing import Callable
 
+import torch
 import torch.multiprocessing as mp
 from omegaconf import DictConfig
-from rich import progress
 from torch.distributed import destroy_process_group, init_process_group
 
+from .progress import Dashboard
 
-def ddp_setup(
-    rank: int,
+logger = logging.getLogger(__name__)
+
+
+def worker(
     dist_fn: Callable,
-    queue: mp.Queue,
     cfg: DictConfig,
+    queue: mp.Queue,
+    log_queue: mp.Queue,
+    rank: int,
     **kwargs,
 ) -> None:
 
     # configure current worker within the DistributedDataParallel context
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
+    os.environ["MASTER_PORT"] = "12356"
     init_process_group(backend="nccl", rank=rank, world_size=cfg.cuda.num_gpus)
 
-    # # reset file handler in append mode for each subprocess
-    # file_handler = logging.FileHandler(filename=cfg.log, mode="a")
-    # # get format from dummy NullHandler
-    # file_handler.setFormatter(logging.root.handlers[-1].formatter)
-    # file_handler.setLevel(logging.INFO if rank == 0 else logging.WARNING)
-    # logging.getLogger().addHandler(file_handler)
-    # logger.setLevel(logging.INFO if rank == 0 else logging.WARNING)
+    # subprocess logs are sent to log_queue and managed by main processes
+    logger.root.addHandler(QueueHandler(log_queue))
+    logger.info(f"Initialized DDP rank {rank}")
+    logger.root.setLevel(logging.INFO if rank == 0 else logging.WARNING)
+    torch.distributed.barrier()
+    logger.info("Logging from rank 0 only")
 
-    # begin training separately on each GPU (rank)
+    # execute the target function from its own subprocess
     dist_fn(**locals())
 
     # terminate DDP worker after function has completed
     destroy_process_group()
 
 
-def train_ddp(cfg: DictConfig, dist_fn: Callable) -> None:
+def ddp(dist_fn: Callable, cfg: DictConfig) -> None:
     """
     Configure logging and progress bar(s) in a process-safe way, then create
     a separate subprocess for each GPU to run the specified function.
     """
 
-    mp.set_start_method("spawn", force=True)
+    mp.set_start_method("spawn")
 
-    # share memory between subprocesses
+    # share memory between subprocesses by adding items to a queue
     queue = mp.Queue()
 
-    # configure the progess bar
-    with progress.Progress(
-        "[progress.description]{task.description}",
-        progress.BarColumn(),
-        "[progress.percentage]{task.percentage:>3.0f}%",
-        progress.TimeRemainingColumn(),
-        progress.TimeElapsedColumn(),
-        refresh_per_second=1,
-        transient=True,
-    ) as pbar:
+    # set up a separate queue to handle log messages from subprocesses
+    log_queue = mp.Queue()
+    listener = QueueListener(log_queue, *logger.root.handlers)
+    listener.start()
 
-        # keep track of subprocesses created for each GPU
-        processes = []
-        for rank in range(cfg.cuda.num_gpus):
+    subprocesses = []  # keep track of subprocesses created for each GPU
 
-            # create a progress bar for each subprocess; task ID = GPU rank
-            task_id = pbar.add_task(f"GPU {rank}", visible=True)
+    for rank in range(cfg.cuda.num_gpus):
 
-            # join function arguments with queue to pass to each subprocess
-            kwargs = dict(cfg=cfg, dist_fn=dist_fn, queue=queue, rank=rank)
+        # join function arguments with queues to pass to each subprocess
+        kwargs = dict(
+            cfg=cfg,
+            dist_fn=dist_fn,
+            queue=queue,
+            log_queue=log_queue,
+            rank=rank,
+        )
 
-            # spawn a subprocess for each GPU
-            p = mp.Process(target=ddp_setup, kwargs=kwargs)
-            p.start()
-            processes.append(p)
+        # spawn a subprocess for each GPU
+        p = mp.Process(target=worker, kwargs=kwargs)
+        p.start()
+        subprocesses.append(p)
 
-        # keep track of when each GPU finishes its task an epoch
-        tasks_completed = {
-            e: [0 for _ in processes] for e in range(1, cfg.train.epochs + 1)
-        }
+    # progress bars are displayed from the main process;
+    # wait until the queue is populated before starting
+    while queue.empty():
+        continue
 
-        # subprocesses push a tuple of information into the queue, which can be
-        # queried from the main process on a loop until all tasks are completed
-        while True:
+    # display progress bars
+    dashboard = Dashboard(cfg, queue)
+    dashboard.show()
 
-            task_id, count, subtotal, current_epoch = queue.get()
-            pbar.update(task_id, completed=count, total=subtotal)
+    # wait for all subprocesses to finish together
+    for p in subprocesses:
+        p.join()
 
-            if count == subtotal:
-                tasks_completed[current_epoch][task_id] = True
-
-            if all(tasks_completed[cfg.train.epochs]):
-                break
-
-        # wait for all processes to finish together
-        for p in processes:
-            p.join()
+    # log_queue.put_nowait(None)
+    listener.stop()

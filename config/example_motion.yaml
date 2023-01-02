@@ -10,15 +10,13 @@ arch:
 cuda:
   num_gpus: -1 # max available
 
-experiment: motion
+experiment: motion_${timestamp:}
 
 experiment_dir: ${repo_dir}/experiments/${experiment}/${pop:${oc.dict.keys:arch}}
 
 log: ${experiment_dir}/train.log
 
 num_workers: 0
-
-overwrite: True
 
 repo_dir: ${oc.env:HOME}/pytorch-trainer
 

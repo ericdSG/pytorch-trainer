@@ -3,7 +3,6 @@ channels:
   - pytorch
   - conda-forge
 dependencies:
-  - fastprogress=1.0.3
   - h5py=3.7.0
   - hydra-core=1.2.0
   - omegaconf=2.2.3
