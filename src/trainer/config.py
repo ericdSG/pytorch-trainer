@@ -5,12 +5,11 @@ Source: https://omegaconf.readthedocs.io/en/latest/structured_config.html
 Created: Dec 2022 by Eric DeMattos
 """
 import logging
-import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
@@ -67,7 +66,6 @@ class Schema:
     num_workers: int
     repo_dir: Path
     train: Train
-    overwrite: Optional[bool] = field(default=False)
     seed: Optional[int] = field(default=None)
     test: Optional[Test] = field(default=None)
 
@@ -90,6 +88,13 @@ def _pop(node):
     Get first element in a list. https://stackoverflow.com/a/71043429/9998470
     """
     return node[0]
+
+
+def _timestamp():
+    """
+    Get the UNIX timestamp in seconds (time elapsed since 1970-01-01 00:00 UTC)
+    """
+    return int(time.time())
 
 
 def configure_device(cfg: DictConfig) -> DictConfig:
@@ -138,15 +143,26 @@ def configure_device(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
-def validate_config(cfg: DictConfig) -> DictConfig:
+def process_config(cfg: DictConfig) -> None:
     """
-    Sanity check the config with type hints, and dynamically configure
-    settings if necessary (ex. GPU availability).
+    Dynamically configure settings if necessary (ex. GPU availability)
+    """
 
-    Error message will indicate whether it was a type mismatch, missing
-    mandatory field, etc.
+    # ensure GPU(s) is/are available
+    cfg = configure_device(cfg)
+
+    # write the final interpolated config file to experiment directory
+    cfg_dict = _convert_path_to_str(OmegaConf.to_container(cfg, resolve=True))
+    cfg_dict = dict(sorted(cfg_dict.items()))
+    OmegaConf.save(cfg_dict, f=cfg.experiment_dir / "config.yaml", resolve=True)
+
+
+def parse_config(cfg: DictConfig) -> DictConfig:
+    """
+    Validate config for type mismatch, missing mandatory field, etc.
     """
     OmegaConf.register_new_resolver("pop", _pop)
+    OmegaConf.register_new_resolver("timestamp", _timestamp)
     cfg = OmegaConf.merge(OmegaConf.structured(Schema), cfg)
     OmegaConf.resolve(cfg)
 
@@ -156,30 +172,9 @@ def validate_config(cfg: DictConfig) -> DictConfig:
         exit(1)
 
     try:
-        if cfg.experiment_dir.exists() and cfg.overwrite:
-            logger.warning("Overwriting experiment directory")
-        cfg.experiment_dir.mkdir(exist_ok=cfg.overwrite, parents=True)
+        cfg.experiment_dir.mkdir(exist_ok=False, parents=True)
     except FileExistsError:
         logging.error(f"Experiment already exists at {cfg.experiment_dir}")
         exit(1)
-
-    # # set up file handler with log file path from config
-    # # will need to be reset in "a" mode after mp.spawn()
-    # file_handler = logging.FileHandler(filename=cfg.log, mode="w")
-    # file_handler.setFormatter(logging.root.handlers[-1].formatter)
-    # logging.getLogger().addHandler(file_handler)
-
-    # ensure GPU(s) is/are available
-    cfg = configure_device(cfg)
-
-    if cfg.seed is not None:
-        # https://pytorch.org/docs/stable/notes/randomness.html
-        np.random.seed(cfg.seed)
-        random.seed(cfg.seed)
-        torch.manual_seed(cfg.seed)
-
-    # write the final interpolated config file to experiment directory
-    cfg_dict = _convert_path_to_str(OmegaConf.to_container(cfg, resolve=True))
-    OmegaConf.save(cfg_dict, f=cfg.experiment_dir / "config.yaml", resolve=True)
 
     return cfg
