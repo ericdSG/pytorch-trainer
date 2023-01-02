@@ -133,7 +133,7 @@ def configure_device(cfg: DictConfig) -> DictConfig:
 
     if cfg.cuda.num_gpus == 0:
         logger.error("Trainer assumes GPU-based training")
-        logger.error("To use CPU, remove DDP and mixed precision")
+        logger.error("To use CPU, remove mixed precision (amp) from Trainer")
         exit(1)
 
     devices = range(len(cfg.cuda.visible_devices))[: cfg.cuda.num_gpus]

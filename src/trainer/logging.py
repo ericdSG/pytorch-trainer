@@ -3,18 +3,37 @@ from __future__ import annotations
 import logging
 import os
 import re
+from logging.handlers import QueueListener
 from pathlib import Path
 
+import torch.multiprocessing as mp
+from omegaconf import DictConfig
 from rich.highlighter import NullHighlighter
 from rich.logging import RichHandler
+
+from .progress import init_dashboard
 
 ISO_8601 = "%Y-%m-%d %H:%M:%S"
 PROCESS_FMT_MARKUP = "[dim]%(processName)-11s[/dim] %(message)s"
 PROCESS_FMT = re.sub(r"\[.*\]", "", re.sub(r"\[/.*\]", "", PROCESS_FMT_MARKUP))
 FILE_HANDLER_FMT = f"%(asctime)s %(levelname)-8s {PROCESS_FMT}"
 
+logger = logging.getLogger(__name__)
 
-def create_rich_handler(level: int = logging.INFO) -> logging.Handler():
+
+def configure_listener(
+    cfg: DictConfig,
+    queue: mp.Queue,
+    log_queue: mp.Queue,
+) -> QueueListener:
+    listener = QueueListener(log_queue, *logger.root.handlers)
+    listener.start()
+    p = mp.Process(target=init_dashboard, args=([cfg, queue, log_queue]))
+    p.start()
+    return listener
+
+
+def create_rich_handler(level: int = logging.INFO) -> logging.Handler:
 
     rich_handler = RichHandler(
         level=level,
@@ -26,7 +45,7 @@ def create_rich_handler(level: int = logging.INFO) -> logging.Handler():
         tracebacks_width=80,
         tracebacks_extra_lines=0,
         tracebacks_word_wrap=False,
-        tracebacks_suppress=os.environ["CONDA_PREFIX"],
+        # tracebacks_suppress=os.environ["CONDA_PREFIX"],
     )
 
     formatter = logging.Formatter(fmt=PROCESS_FMT_MARKUP)
@@ -38,7 +57,7 @@ def create_rich_handler(level: int = logging.INFO) -> logging.Handler():
 def create_file_handler(
     filename: Path,
     level: int = logging.INFO,
-) -> logging.Handler():
+) -> logging.Handler:
     """
     Create logging FileHandler based on log filename specified in config
     """

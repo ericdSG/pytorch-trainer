@@ -18,7 +18,7 @@ from trainer.config import parse_config, process_config
 from trainer.data.audioloader import get_dl
 from trainer.distributed import ddp
 from trainer.evaluate import Evaluator
-from trainer.logging import create_file_handler, create_rich_handler
+from trainer.logging import configure_listener, create_file_handler, create_rich_handler
 from trainer.train import Trainer
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +39,19 @@ def read_config() -> DictConfig:
         with initialize("../config", None):
             yaml = compose("example_motion")
 
-    return parse_config(yaml)
+    # parse and interpolate yaml dict
+    cfg = parse_config(yaml)
+
+    # root logging handlers are instantiated here instead of log.yml so default
+    # Console object used by Rich is shared between RichHandler and RichProgress
+    # https://github.com/Textualize/rich/issues/1379
+    logger.root.addHandler(create_rich_handler())
+    logger.root.addHandler(create_file_handler(cfg.log))
+
+    # validate config file after logging has been fully set up
+    process_config(cfg)
+
+    return cfg
 
 
 def initialize_lstm(
@@ -126,20 +138,25 @@ def main() -> None:
 
     cfg = read_config()
 
-    # root logging handlers are instantiated here instead of log.yml so default
-    # Console object used by Rich is shared between RichHandler and RichProgress
-    # https://github.com/Textualize/rich/issues/1379
-    logger.root.addHandler(create_rich_handler())
-    logger.root.addHandler(create_file_handler(cfg.log))
+    # required before any subprocess creation for multi-GPU training with torch
+    mp.set_start_method("spawn")
 
-    # validate config file after logging has been fully set up
-    process_config(cfg)
+    # progress bars are displayed from a dedicated subprocess
+    # to share memory between all processes, pass messages via queue
+    queue, log_queue = mp.Queue(), mp.Queue()
+    listener = configure_listener(cfg, queue, log_queue)
 
     # set up DistributedDataParallel if more than one GPU requested
-    ddp(train, cfg) if cfg.cuda.num_gpus > 1 else train(cfg)
+    if cfg.cuda.num_gpus > 1:
+        ddp(train, cfg, queue, log_queue)
+    else:
+        train(cfg, queue)
 
     # run evaluation with 1 GPU from main process only (for now?)
     evaluate(cfg)
+
+    # log_queue.put_nowait(None)
+    listener.stop()
 
 
 if __name__ == "__main__":

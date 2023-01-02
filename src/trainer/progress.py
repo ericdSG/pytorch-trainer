@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from logging.handlers import QueueHandler
 from typing import Tuple
 
 import torch.multiprocessing as mp
@@ -18,6 +19,25 @@ from rich.progress import (
 from rich.table import Column, Table
 
 logger = logging.getLogger(__name__)
+
+
+def init_dashboard(
+    cfg: DictConfig,
+    queue: mp.Queue,
+    log_queue: mp.Queue,
+) -> None:
+
+    # subprocess logs are sent to log_queue and managed by main processes
+    logger.root.addHandler(QueueHandler(log_queue))
+    logger.info(f"Setting up dashboard")
+
+    # wait until the queue is populated before initializing
+    while queue.empty():
+        continue
+
+    # display progress bars
+    dashboard = Dashboard(cfg, queue)
+    dashboard.show()
 
 
 class EpochMonitor:
@@ -78,7 +98,7 @@ class Dashboard:
         self._create_epochs_progress()
         self._create_rank_pbars()
 
-    def _create_epochs_progress(self) -> Progress:
+    def _create_epochs_progress(self) -> None:
         self.epochs_progress = Progress(
             "{task.description}",
             BarColumn(bar_width=5),
@@ -94,7 +114,7 @@ class Dashboard:
         )
         self.epochs_progress.add_task("Epoch", total=self.num_epochs)
 
-    def _create_rank_pbars(self) -> Progress:
+    def _create_rank_pbars(self) -> None:
 
         self.rank_pbars = {i: None for i in range(self.num_ranks)}
 
@@ -168,7 +188,7 @@ class Dashboard:
             for i, rank in self.rank_pbars.items():
                 panel = Panel.fit(rank, title=f"[b]Rank {i}", padding=(1, 2))
                 row.append(panel)
-                if i % 2 == 1:
+                if len(row) == 2 or i == self.num_ranks - 1:
                     g.add_row(*row)
                     row = []
 

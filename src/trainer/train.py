@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 import torch
@@ -38,7 +38,7 @@ class Trainer:
         v_dl: DataLoader,
         metrics: list[Callable],
         rank: int = 0,
-        comparison: str = "lt",  # {"lt", "gt"}
+        comparison: Literal["lt", "gt"] = "lt",
         queue: torch.multiprocessing.Queue | None = None,
     ) -> None:
 
@@ -55,7 +55,7 @@ class Trainer:
         self.queue = queue
 
         # training
-        self.start_epoch = self.current_epoch = 0
+        self.start_epoch = self.epoch = 0
         self.best_loss = torch.inf if self.comparison == "lt" else -torch.inf
         self.lr_scheduler = OneCycleLR(  # TODO: lr squareroot(num_gpus) ??
             self.optimizer,
@@ -71,7 +71,7 @@ class Trainer:
     def _compare(self, epoch_loss: float, best_loss: float) -> bool:
         """
         Determine whether validation loss has improved for current epoch. For
-        metrics that increase (i.e. accuracy), set Trainer comparison="gt"
+        metrics that increase, e.g. accuracy, set Trainer(comparison="gt").
         """
         losses = (epoch_loss, best_loss)
         if self.comparison == "lt":
@@ -83,63 +83,69 @@ class Trainer:
         else:
             raise NotImplementedError(f'`comparison` must be "lt" or "gt"')
 
+    def _run_batch(self, x, y, train) -> list[torch.Tensor]:
+
+        x, y = x.to(self.rank), y.to(self.rank)
+
+        # forward pass
+        if not train and torch.distributed.is_initialized():
+            # get non-replicated model for eval
+            # https://discuss.pytorch.org/t/99867/11
+            y_hat = self.model.module(x)
+        else:
+            y_hat = self.model(x)
+
+        # the first metric in the list is the loss function
+        batch_metrics = [metric(y_hat, y) for metric in self.metrics]
+
+        if train:
+            self.scaler.scale(batch_metrics[0]).backward()  # amp
+            self.scaler.step(self.optimizer)  # amp
+            self.scaler.update()  # amp
+            self.lr_scheduler.step()
+            self.optimizer.zero_grad()
+
+        return batch_metrics
+
+    def _run_batch_amp(self, *args, **kwargs) -> list[torch.Tensor]:
+        with torch.cuda.amp.autocast():
+            return self._run_batch(*args, **kwargs)
+
     def _predict(self, dl: DataLoader, train: bool) -> list[AverageMeter]:
 
         # switch off grad engine if applicable
         self.model.train() if train else self.model.eval()
 
-        metrics = [AverageMeter(m, self.rank) for m in self.metrics]
+        # collect metric values for current epoch
+        meters = [AverageMeter(m, self.rank) for m in self.metrics]
 
-        seen = 0
+        # keep track of how many samples have been processed for progress bars
+        count = 0
 
         for x, y in dl:
 
-            x, y = x.to(self.rank), y.to(self.rank)
+            metrics = self._run_batch_amp(x, y, train)
 
-            # automatic mixed precision (amp)
-            with torch.cuda.amp.autocast():
+            # keep losses as tensors, but remove computational graph
+            for i, m in enumerate(meters):
+                m.update(metrics[i].detach())
 
-                # forward pass
-                if not train and torch.distributed.is_initialized():
-                    # get non-replicated model for eval
-                    # https://discuss.pytorch.org/t/99867/11
-                    y_hat = self.model.module(x)
-                else:
-                    y_hat = self.model(x)
+            # propagate information to main process for pbar when using DDP
+            if self.queue:
+                count += x.shape[0]
+                self.queue.put((self.rank, count, len(dl), self.epoch + 1))
 
-                # the first metric in the list is the loss function
-                batch_metrics = [metric(y_hat, y) for metric in self.metrics]
-
-                if train:
-                    self.scaler.scale(batch_metrics[0]).backward()  # amp
-                    self.scaler.step(self.optimizer)  # amp
-                    self.scaler.update()  # amp
-                    self.lr_scheduler.step()
-                    self.optimizer.zero_grad()
-
-                # keep losses as tensors, but remove computational graph
-                for i, m in enumerate(metrics):
-                    m.update(batch_metrics[i].detach())
-
-                seen += x.shape[0]
-
-                # propagate information to main process for pbar when using DDP
-                if self.queue:
-                    self.queue.put(
-                        (self.rank, seen, len(dl), self.current_epoch + 1)
-                    )
-
-        return metrics
+        return meters
 
     def _predict_ddp(self, dl: DataLoader, train: bool) -> list[AverageMeter]:
 
         # update DistributedGroupSampler epoch for deterministic shuffling
-        dl.batch_sampler.set_epoch(self.current_epoch)
+        dl.batch_sampler.set_epoch(self.epoch)
 
         # use context manager necessary for variable-length batches with DDP
         # Source: https://pytorch.org/tutorials/advanced/generic_join.html
         with Join([self.model]):
-            metrics = self._predict(dl, train=train)
+            meters = self._predict(dl, train=train)
 
         # wait for all GPU processes to finish
         torch.distributed.barrier()
@@ -152,23 +158,23 @@ class Trainer:
         # https://pytorch.org/docs/stable/distributed.html
         # https://discuss.pytorch.org/t/93306/4
 
-        for metric in metrics:
+        for meter in meters:
             # must be cuda tensors (without computation graph)
-            # torch.distributed.all_reduce(metric.avg)  # TODO: reduce strategy
-            torch.distributed.all_reduce(metric.count)  # TODO: reduce strategy
-            torch.distributed.all_reduce(metric.sum)  # TODO: reduce strategy
-            torch.distributed.all_reduce(metric.val)  # TODO: reduce strategy
+            torch.distributed.all_reduce(meter.avg)  # TODO: reduce strategy
+            torch.distributed.all_reduce(meter.count)  # TODO: reduce strategy
+            torch.distributed.all_reduce(meter.sum)  # TODO: reduce strategy
+            torch.distributed.all_reduce(meter.val)  # TODO: reduce strategy
 
-        return metrics
+        return meters
 
     def predict(self, dl: DataLoader, train: bool) -> list[float]:
 
         if torch.distributed.is_initialized():
-            metrics = self._predict_ddp(dl, train=train)
+            meters = self._predict_ddp(dl, train=train)
         else:
-            metrics = self._predict(dl, train=train)
+            meters = self._predict(dl, train=train)
 
-        return [(metric.sum / metric.count).item() for metric in metrics]
+        return [meter.avg.item() for meter in meters]
 
     def train(self, checkpoint: str | None = None) -> None:
 
@@ -178,7 +184,7 @@ class Trainer:
 
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
-            self.current_epoch = epoch
+            self.epoch = epoch
 
             train_metrics = self.predict(self.t_dl, train=True)
             valid_metrics = self.predict(self.v_dl, train=False)
@@ -210,7 +216,7 @@ class Trainer:
             model_state_dict = self.model.state_dict()
 
         checkpoint = {
-            "epoch": self.current_epoch + 1,  # add 1 for start_epoch if resume
+            "epoch": self.epoch + 1,  # add 1 for start_epoch if resume
             "metrics": self.metrics,
             "model_state": model_state_dict,
             "optimizer_state": self.optimizer.state_dict(),

@@ -1,14 +1,12 @@
 import logging
 import os
-from logging.handlers import QueueHandler, QueueListener
+from logging.handlers import QueueHandler
 from typing import Callable
 
 import torch
 import torch.multiprocessing as mp
 from omegaconf import DictConfig
 from torch.distributed import destroy_process_group, init_process_group
-
-from .progress import Dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -41,21 +39,15 @@ def worker(
     destroy_process_group()
 
 
-def ddp(dist_fn: Callable, cfg: DictConfig) -> None:
+def ddp(
+    dist_fn: Callable,
+    cfg: DictConfig,
+    queue: mp.Queue,
+    log_queue: mp.Queue,
+) -> None:
     """
-    Configure logging and progress bar(s) in a process-safe way, then create
-    a separate subprocess for each GPU to run the specified function.
+    Create a separate subprocess for each GPU to run the specified function.
     """
-
-    mp.set_start_method("spawn")
-
-    # share memory between subprocesses by adding items to a queue
-    queue = mp.Queue()
-
-    # set up a separate queue to handle log messages from subprocesses
-    log_queue = mp.Queue()
-    listener = QueueListener(log_queue, *logger.root.handlers)
-    listener.start()
 
     subprocesses = []  # keep track of subprocesses created for each GPU
 
@@ -75,18 +67,6 @@ def ddp(dist_fn: Callable, cfg: DictConfig) -> None:
         p.start()
         subprocesses.append(p)
 
-    # progress bars are displayed from the main process;
-    # wait until the queue is populated before starting
-    while queue.empty():
-        continue
-
-    # display progress bars
-    dashboard = Dashboard(cfg, queue)
-    dashboard.show()
-
     # wait for all subprocesses to finish together
     for p in subprocesses:
         p.join()
-
-    # log_queue.put_nowait(None)
-    listener.stop()
