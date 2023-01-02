@@ -41,12 +41,14 @@ def get_dl(
 
     if valid:
         # seed required for deterministic shuffling across GPU processes
-        al.split_by_valid_pct(0.1, seed=0)
+        al.split_by_valid_pct(0.25, seed=0)
 
     al.add(transforms=[KaldiFbankTransform(num_mel_bins=40)])
     al.bs = batch_size
 
     if valid:
-        return al.batches("train"), al.batches("valid")
+        t_dl = al.batches("train", max_pad=0.5)
+        v_dl = al.batches("valid")
+        return t_dl, v_dl
     else:
         return al.batches("test")
