@@ -20,41 +20,16 @@ def worker(
     log_queue: mp.Queue,
     **kwargs,
 ) -> None:
+    """
+    A worker subprocess. Not intended for DDP: use ddp_worker()
+    """
 
     # subprocess logs are sent to log_queue and managed by main processes
-    if mp.current_process().name != "MainProcess":
-        logger.root.addHandler(QueueHandler(log_queue))
-
+    logger.root.addHandler(QueueHandler(log_queue))
     logger.info(f"Initialized worker")
 
     # execute the target function
     dist_fn(**locals())
-
-
-def spawn(
-    dist_fn: Callable,
-    cfg: DictConfig,
-    queue: mp.Queue,
-    log_queue: mp.Queue,
-    **kwargs,
-) -> None:
-    """
-    Create a single subprocess (worker) to execute the dist_fn so main process
-    can handle logging and progress bars/dashboard.
-    """
-
-    # breakpoints are only supported from main process
-    # dashboard will be disabled since it cannot run concurrently
-    if cfg.debug:
-        worker(**locals())
-        return
-
-    # create a dedicated subprocess for the target function
-    p = mp.Process(target=worker, args=([dist_fn, cfg, queue, log_queue]))
-    p.start()
-
-    # stdout (logging and progress bars) is handled from main process
-    process_queue(cfg, queue)
 
 
 def ddp_worker(
@@ -85,7 +60,30 @@ def ddp_worker(
     destroy_process_group()
 
 
-def ddp(
+def spawn(
+    dist_fn: Callable,
+    cfg: DictConfig,
+    queue: mp.Queue,
+    log_queue: mp.Queue,
+) -> None:
+    """
+    Create a single subprocess (worker) to execute the dist_fn.
+    """
+
+    # breakpoints are only supported for single-process applications
+    if cfg.debug:
+        dist_fn(**locals())
+        return
+
+    # create a dedicated subprocess for the target function
+    p = mp.Process(target=worker, kwargs=locals())
+    p.start()
+
+    # stdout (logging and progress bars) is handled from main process
+    process_queue(cfg, queue)
+
+
+def ddp_spawn(
     dist_fn: Callable,
     cfg: DictConfig,
     queue: mp.Queue,
@@ -95,21 +93,12 @@ def ddp(
     Create a separate subprocess for each GPU to run the specified function.
     """
 
+    kwargs = locals()
     subprocesses = []  # keep track of subprocesses created for each GPU
 
+    # spawn a subprocess for each GPU
     for rank in range(cfg.cuda.num_gpus):
-
-        # join function arguments with queues to pass to each subprocess
-        kwargs = dict(
-            cfg=cfg,
-            dist_fn=dist_fn,
-            queue=queue,
-            log_queue=log_queue,
-            rank=rank,
-        )
-
-        # spawn a subprocess for each GPU
-        p = mp.Process(target=ddp_worker, kwargs=kwargs)
+        p = mp.Process(target=ddp_worker, kwargs=kwargs | dict(rank=rank))
         p.start()
         subprocesses.append(p)
 

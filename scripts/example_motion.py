@@ -16,7 +16,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from trainer.arch.lstm import LSTM
 from trainer.config import parse_config, process_config
 from trainer.data.audioloader import get_dl
-from trainer.distributed import ddp, spawn
+from trainer.distributed import ddp_spawn, spawn
 from trainer.evaluate import Evaluator
 from trainer.logging import create_file_handler, create_rich_handler
 from trainer.train import Trainer
@@ -84,10 +84,14 @@ def evaluate(cfg: DictConfig) -> None:
     evaluator.evaluate()
 
 
-def train(cfg: DictConfig, queue: mp.Queue, **kwargs) -> None:
+def train(
+    cfg: DictConfig,
+    queue: mp.Queue,
+    rank: int = torch.cuda.current_device(),
+    **kwargs,
+) -> None:
     """
-    Load data and train a model. When DDP is enabled, this function will be
-    executed across N subprocesses corresponding to the number of GPUs.
+    Load data and train a model.
     """
 
     # Set seed at the beginning of the training process. It is crucial to set
@@ -98,11 +102,6 @@ def train(cfg: DictConfig, queue: mp.Queue, **kwargs) -> None:
         np.random.seed(cfg.seed)
         random.seed(cfg.seed)
         torch.manual_seed(cfg.seed)
-
-    if torch.distributed.is_initialized():
-        rank = torch.distributed.get_rank()
-    else:
-        rank = torch.cuda.current_device()
 
     # create DataLoaders
     t_dl, v_dl = get_dl(
@@ -127,8 +126,7 @@ def train(cfg: DictConfig, queue: mp.Queue, **kwargs) -> None:
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
     # collect model components into a Trainer object
-    args = [cfg, model, optimizer, t_dl, v_dl, metrics, queue, rank]
-    trainer = Trainer(*args)
+    trainer = Trainer(cfg, model, optimizer, t_dl, v_dl, metrics, queue, rank)
     logger.info("Training")
     trainer.train()
 
@@ -148,7 +146,7 @@ def main() -> None:
     # train with DistributedDataParallel if more than one GPU is requested
     # otherwise delegate training to a subprocess so main can handle stdout
     args = [train, cfg, queue, log_queue]
-    ddp(*args) if cfg.cuda.num_gpus > 1 else spawn(*args)
+    ddp_spawn(*args) if cfg.cuda.num_gpus > 1 else spawn(*args)
 
     # run evaluation with 1 GPU from main process only (for now?)
     evaluate(cfg)
