@@ -137,6 +137,10 @@ class Trainer:
             count += x.shape[0]
             self.queue.put((self.rank, count, len(dl), self.epoch + 1))
 
+        # need to update dashboardwhen current rank has no samples to process
+        if len(dl) == 0:
+            self.queue.put((self.rank, 0, 0, self.epoch + 1))
+
         return meters
 
     def _predict_ddp(self, dl: DataLoader, train: bool) -> list[AverageMeter]:
