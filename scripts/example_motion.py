@@ -16,7 +16,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from trainer.arch.lstm import LSTM
 from trainer.config import parse_config, process_config
 from trainer.data.audioloader import get_dl
-from trainer.distributed import ddp_spawn, spawn
+from trainer.distributed import spawn
 from trainer.evaluate import Evaluator
 from trainer.logging import create_file_handler, create_rich_handler
 from trainer.train import Trainer
@@ -138,15 +138,14 @@ def main() -> None:
     # torch requires this before any multiprocess object creation
     mp.set_start_method("spawn")
 
-    # to share memory between processes, pass messages via queue
+    # share memory between processes by passing messages via queue
     queue, log_queue = mp.Queue(), mp.Queue()
     listener = logging.handlers.QueueListener(log_queue, *logger.root.handlers)
     listener.start()
 
     # train with DistributedDataParallel if more than one GPU is requested
     # otherwise delegate training to a subprocess so main can handle stdout
-    args = [train, cfg, queue, log_queue]
-    ddp_spawn(*args) if cfg.cuda.num_gpus > 1 else spawn(*args)
+    spawn(train, cfg, queue, log_queue)
 
     # run evaluation with 1 GPU from main process only (for now?)
     evaluate(cfg)

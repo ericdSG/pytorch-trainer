@@ -19,7 +19,7 @@ class LSTM(torch.nn.Module):
         bidirectional: bool = False,  # PyTorch default
         *args,
         **kwargs,
-    ):
+    ) -> None:
 
         super().__init__()
 
@@ -40,7 +40,7 @@ class LSTM(torch.nn.Module):
         name = self.__class__.__name__
         logger.debug(f"{name} parameters = {param_count(self):,}")
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # assign tensors to adjacent memory blocks to optimize LSTM unrolling
         x = x.contiguous()

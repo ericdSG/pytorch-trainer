@@ -8,6 +8,7 @@ Updated: Dec 2022 by Eric DeMattos
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -85,7 +86,9 @@ class Trainer:
 
     def _run_batch(self, x, y, train) -> list[torch.Tensor]:
 
-        x, y = x.to(self.rank), y.to(self.rank)
+        x, y = x.to(self.rank, non_blocking=True), y.to(
+            self.rank, non_blocking=True
+        )
 
         # forward pass
         if not train and torch.distributed.is_initialized():
@@ -181,6 +184,21 @@ class Trainer:
             self.load_checkpoint(self.cfg.experiment_dir / checkpoint)
             logger.info(f"Resuming from epoch {self.start_epoch}")
 
+        # # log header of tracked metrics TENTATIVE
+        # logger.info(
+        #     f"Monitoring {self.metrics[0].__class__.__name__} on valid set (*)"
+        # )
+        # float_precision = 8
+        # str_width = 10
+        # log = "Epoch | *"
+        # for metric in self.metrics:
+        #     metric_name = metric.__class__.__name__
+        #     for split in ["t", "v"]:
+        #         metric = f"{split}_{metric_name}"
+        #         log += f" | {metric[:str_width]:^{str_width}}"
+        # # log += f" | {'time':^5}"
+        # logger.info(log)
+
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 
             self.epoch = epoch
@@ -191,6 +209,17 @@ class Trainer:
             # save model parameters and metadata
             is_best = self._compare(valid_metrics[0], self.best_loss)
             self.save_checkpoint(is_best)
+
+            # # log metrics (fixed width capped at float_precision) TENTATIVE
+            # log = f"{self.epoch:>{len('epoch')}} | "
+            # log += "*" if is_best else " "
+            # for train_value, valid_value in zip(train_metrics, valid_metrics):
+            #     train_value = f"{train_value:0.{float_precision}f}"
+            #     valid_value = f"{valid_value:0.{float_precision}f}"
+            #     log += f" | {train_value[:str_width]} | {valid_value[:str_width]}"
+            # # log += f" | {epoch_time}"
+            # # log += f" | {loss}"
+            # logger.info(log)
 
         logger.debug(f"Training completed")
         self.close()
