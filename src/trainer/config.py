@@ -66,6 +66,7 @@ class Schema:
     num_workers: int
     repo_dir: Path
     train: Train
+    debug: Optional[bool] = field(default=False)
     seed: Optional[int] = field(default=None)
     test: Optional[Test] = field(default=None)
 
@@ -147,6 +148,10 @@ def process_config(cfg: DictConfig) -> None:
     """
     Dynamically configure settings if necessary (ex. GPU availability)
     """
+
+    if cfg.debug and cfg.cuda.num_gpus not in {0, 1}:
+        logging.warning(f"Debug mode: multiprocessing disabled")
+        OmegaConf.update(cfg, "cuda.num_gpus", 1)
 
     # ensure GPU(s) is/are available
     cfg = configure_device(cfg)

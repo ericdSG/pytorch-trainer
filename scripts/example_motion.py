@@ -16,9 +16,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from trainer.arch.lstm import LSTM
 from trainer.config import parse_config, process_config
 from trainer.data.audioloader import get_dl
-from trainer.distributed import ddp
+from trainer.distributed import ddp, spawn
 from trainer.evaluate import Evaluator
-from trainer.logging import configure_listener, create_file_handler, create_rich_handler
+from trainer.logging import create_file_handler, create_rich_handler
 from trainer.train import Trainer
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -84,7 +84,7 @@ def evaluate(cfg: DictConfig) -> None:
     evaluator.evaluate()
 
 
-def train(cfg: DictConfig, queue: mp.Queue | None = None, **kwargs) -> None:
+def train(cfg: DictConfig, queue: mp.Queue, **kwargs) -> None:
     """
     Load data and train a model. When DDP is enabled, this function will be
     executed across N subprocesses corresponding to the number of GPUs.
@@ -102,7 +102,7 @@ def train(cfg: DictConfig, queue: mp.Queue | None = None, **kwargs) -> None:
     if torch.distributed.is_initialized():
         rank = torch.distributed.get_rank()
     else:
-        rank = cfg.cuda.visible_devices[0]  # TODO: get device instead
+        rank = torch.cuda.current_device()
 
     # create DataLoaders
     t_dl, v_dl = get_dl(
@@ -127,9 +127,8 @@ def train(cfg: DictConfig, queue: mp.Queue | None = None, **kwargs) -> None:
     metrics = [torch.nn.MSELoss(), torch.nn.L1Loss()]
 
     # collect model components into a Trainer object
-    trainer = Trainer(
-        cfg, model, optimizer, t_dl, v_dl, metrics, rank, queue=queue
-    )
+    args = [cfg, model, optimizer, t_dl, v_dl, metrics, queue, rank]
+    trainer = Trainer(*args)
     logger.info("Training")
     trainer.train()
 
@@ -138,19 +137,18 @@ def main() -> None:
 
     cfg = read_config()
 
-    # required before any subprocess creation for multi-GPU training with torch
+    # torch requires this before any multiprocess object creation
     mp.set_start_method("spawn")
 
-    # progress bars are displayed from a dedicated subprocess
-    # to share memory between all processes, pass messages via queue
+    # to share memory between processes, pass messages via queue
     queue, log_queue = mp.Queue(), mp.Queue()
-    listener = configure_listener(cfg, queue, log_queue)
+    listener = logging.handlers.QueueListener(log_queue, *logger.root.handlers)
+    listener.start()
 
-    # set up DistributedDataParallel if more than one GPU requested
-    if cfg.cuda.num_gpus > 1:
-        ddp(train, cfg, queue, log_queue)
-    else:
-        train(cfg, queue)
+    # train with DistributedDataParallel if more than one GPU is requested
+    # otherwise delegate training to a subprocess so main can handle stdout
+    args = [train, cfg, queue, log_queue]
+    ddp(*args) if cfg.cuda.num_gpus > 1 else spawn(*args)
 
     # run evaluation with 1 GPU from main process only (for now?)
     evaluate(cfg)

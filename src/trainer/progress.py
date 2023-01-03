@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from logging.handlers import QueueHandler
+import time
 from typing import Tuple
 
 import torch.multiprocessing as mp
@@ -21,21 +21,13 @@ from rich.table import Column, Table
 logger = logging.getLogger(__name__)
 
 
-def init_dashboard(
-    cfg: DictConfig,
-    queue: mp.Queue,
-    log_queue: mp.Queue,
-) -> None:
+def process_queue(cfg: DictConfig, queue: mp.Queue) -> None:
 
-    # subprocess logs are sent to log_queue and managed by main processes
-    logger.root.addHandler(QueueHandler(log_queue))
-    logger.info(f"Setting up dashboard")
-
-    # wait until the queue is populated before initializing
+    # (from main process) wait until queue is populated
     while queue.empty():
         continue
 
-    # display progress bars
+    # display progress bars from main process
     dashboard = Dashboard(cfg, queue)
     dashboard.show()
 
@@ -200,3 +192,6 @@ class Dashboard:
                 # subprocesses can push an arbitrary message into a queue, which
                 # is queried from the main process until all tasks are completed
                 self.read_message(message=self.queue.get(), epoch=epoch)
+
+            # simply wait a second to avoid race conditions that mangle stdout
+            time.sleep(1)

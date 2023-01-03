@@ -37,12 +37,12 @@ class Trainer:
         t_dl: DataLoader,
         v_dl: DataLoader,
         metrics: list[Callable],
-        rank: int = 0,
+        queue: torch.multiprocessing.Queue,
+        rank: int,
         comparison: Literal["lt", "gt"] = "lt",
-        queue: torch.multiprocessing.Queue | None = None,
     ) -> None:
 
-        logging.debug("Setting up Trainer")
+        logger.debug("Setting up Trainer")
 
         self.cfg = cfg
         self.model = model
@@ -57,7 +57,7 @@ class Trainer:
         # training
         self.start_epoch = self.epoch = 0
         self.best_loss = torch.inf if self.comparison == "lt" else -torch.inf
-        self.lr_scheduler = OneCycleLR(  # TODO: lr squareroot(num_gpus) ??
+        self.lr_scheduler = OneCycleLR(
             self.optimizer,
             self.cfg.train.lr,
             epochs=self.cfg.train.epochs,
@@ -130,10 +130,9 @@ class Trainer:
             for i, m in enumerate(meters):
                 m.update(metrics[i].detach())
 
-            # propagate information to main process for pbar when using DDP
-            if self.queue:
-                count += x.shape[0]
-                self.queue.put((self.rank, count, len(dl), self.epoch + 1))
+            # propagate information to main process for dashboard
+            count += x.shape[0]
+            self.queue.put((self.rank, count, len(dl), self.epoch + 1))
 
         return meters
 
@@ -180,7 +179,7 @@ class Trainer:
 
         if checkpoint:
             self.load_checkpoint(self.cfg.experiment_dir / checkpoint)
-            logging.info(f"Resuming from epoch {self.start_epoch}")
+            logger.info(f"Resuming from epoch {self.start_epoch}")
 
         for epoch in range(self.start_epoch, self.cfg.train.epochs):
 

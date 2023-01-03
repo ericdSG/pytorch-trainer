@@ -32,7 +32,9 @@ Clone the repo, navigate to the top-level directory, and:
 
 # TODO
 
-- [x] Automatic Mixed Precision
-- [ ] Add TensorBoard support
-- [x] Add `DistributedDataParallel` support
-- [ ] Containerize with Docker
+- [x] Automatic mixed precision
+- [x] `DistributedDataParallel`
+- [x] Process-safe logging
+- [x] Progress bars from multiple subprocesses/GPUs
+- [ ] TensorBoard
+- [ ] Docker
