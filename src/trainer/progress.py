@@ -79,7 +79,7 @@ class Dashboard:
 
         # get values that we be reused
         self.num_epochs = self.cfg.train.epochs
-        self.num_ranks = self.cfg.cuda.num_gpus
+        self.num_ranks = self.cfg.cuda.num_gpus if self.cfg.cuda.ddp else 1
 
         # configure TaskProgressColumn and MofNCompleteColumn to be equal width
         self.separator = "/"
@@ -178,7 +178,8 @@ class Dashboard:
             g.add_row(Panel.fit(self.epochs_progress, padding=(1, 2)))
             row = []
             for i, rank in self.rank_pbars.items():
-                panel = Panel.fit(rank, title=f"[b]Rank {i}", padding=(1, 2))
+                title = f"[b]Rank {i}" if self.cfg.cuda.ddp else ""
+                panel = Panel.fit(rank, title=title, padding=(1, 2))
                 row.append(panel)
                 if len(row) == 2 or i == self.num_ranks - 1:
                     g.add_row(*row)

@@ -33,8 +33,11 @@ Clone the repo, navigate to the top-level directory, and:
 # TODO
 
 - [x] Automatic mixed precision
+- [x] `DataParallel`
 - [x] `DistributedDataParallel`
 - [x] Process-safe logging
 - [x] Progress bars from multiple subprocesses/GPUs
 - [ ] TensorBoard
 - [ ] Docker
+- [x] Load models trained using DP/DDP with 1 GPU
+- [ ] Load models trained using 1 GPU with DP/DDP

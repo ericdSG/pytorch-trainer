@@ -11,14 +11,12 @@ import torch
 import torch.multiprocessing as mp
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
-from torch.nn.parallel import DistributedDataParallel as DDP
 
-from trainer.arch.lstm import LSTM
-from trainer.config import parse_config, process_config
-from trainer.data.audioloader import get_dl
+from trainer.arch import create_model
+from trainer.config import parse_config
+from trainer.data import create_dl
 from trainer.distributed import spawn
 from trainer.evaluate import Evaluator
-from trainer.logging import create_file_handler, create_rich_handler
 from trainer.train import Trainer
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,45 +38,13 @@ def read_config() -> DictConfig:
             yaml = compose("example_motion")
 
     # parse and interpolate yaml dict
-    cfg = parse_config(yaml)
-
-    # root logging handlers are instantiated here instead of log.yml so default
-    # Console object used by Rich is shared between RichHandler and RichProgress
-    # https://github.com/Textualize/rich/issues/1379
-    logger.root.addHandler(create_rich_handler())
-    logger.root.addHandler(create_file_handler(cfg.log))
-
-    # validate config file after logging has been fully set up
-    process_config(cfg)
-
-    return cfg
+    return parse_config(yaml)
 
 
-def initialize_lstm(
-    cfg: DictConfig,
-    dl: torch.utils.data.DataLoader,
-    rank: int,
-) -> torch.nn.Module:
-    """
-    Create LSTM with hyperparameters from config and input/output size from DL.
-    """
-    model = LSTM(
-        input_size=dl.dataset[0][0].shape[-1],
-        out_features=dl.dataset[0][1].data.shape[-1],
-        **cfg.arch.lstm,  # unpack the hyperparams as kwargs
-    ).to(rank)
+def evaluate(cfg: DictConfig, rank: int = torch.cuda.current_device()) -> None:
 
-    # clone model across all GPUs
-    if torch.distributed.is_initialized():
-        model = DDP(model, device_ids=[rank])
-
-    return model
-
-
-def evaluate(cfg: DictConfig) -> None:
-
-    t_dl = get_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
-    model = initialize_lstm(cfg, t_dl, cfg.cuda.visible_devices[0])
+    t_dl = create_dl(cfg.test.data.x_dir, cfg.test.data.y_dir)
+    model = create_model(cfg, t_dl, rank)
     evaluator = Evaluator(cfg, model, t_dl, checkpoint="checkpoint_best.pth")
     logger.info("Evaluating")
     evaluator.evaluate()
@@ -95,8 +61,8 @@ def train(
     """
 
     # Set seed at the beginning of the training process. It is crucial to set
-    # it here with DDP so that all subprocesses initialize the model with the
-    # same weights.
+    # it here when using DDP so that all subprocesses initialize the model with
+    # the same weights.
     # https://pytorch.org/docs/stable/notes/randomness.html
     if cfg.seed is not None:
         np.random.seed(cfg.seed)
@@ -104,7 +70,7 @@ def train(
         torch.manual_seed(cfg.seed)
 
     # create DataLoaders
-    t_dl, v_dl = get_dl(
+    t_dl, v_dl = create_dl(
         cfg.train.data.x_dir,
         cfg.train.data.y_dir,
         batch_size=cfg.train.batch_size,
@@ -112,7 +78,7 @@ def train(
     )
 
     # instantiate model
-    model = initialize_lstm(cfg, t_dl, rank)
+    model = create_model(cfg, t_dl, rank)
 
     # instantiate optimizer
     optimizer = torch.optim.AdamW(
@@ -143,11 +109,12 @@ def main() -> None:
     listener = logging.handlers.QueueListener(log_queue, *logger.root.handlers)
     listener.start()
 
-    # train with DistributedDataParallel if more than one GPU is requested
-    # otherwise delegate training to a subprocess so main can handle stdout
+    # delegate training to subprocess(es)
     spawn(train, cfg, queue, log_queue)
 
-    # run evaluation with 1 GPU from main process only (for now?)
+    # run evaluation with 1 GPU from main process only (for now)
+    OmegaConf.update(cfg, "cuda.num_gpus", 1)
+    OmegaConf.update(cfg, "cuda.ddp", False)
     evaluate(cfg)
 
     # log_queue.put_nowait(None)

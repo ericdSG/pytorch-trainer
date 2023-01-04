@@ -21,7 +21,7 @@ def get_classes(rts_paths: list[str]) -> set[str]:
     return classes
 
 
-def get_dl(
+def create_dl(
     x_dir: Path,
     y_dir: Path,
     batch_size: int = 1,

@@ -11,11 +11,12 @@ from typing import Tuple
 
 import torch
 from omegaconf import DictConfig
+from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
 
 from MLtools.AnimationMetric.AnimationMetric import AnimationMetric
 from MLtools.CarnivalTools.carnival_tools import CarnivalRTS
 
-from .data.audioloader import get_classes
+from .data import get_classes
 
 logger = logging.getLogger(__name__)
 
@@ -88,4 +89,8 @@ class Evaluator:
 
         logger.debug(f"Loading {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path)
+        if self.cfg.cuda.num_gpus == 1:
+            consume_prefix_in_state_dict_if_present(
+                checkpoint["model_state"], "module."
+            )
         self.model.load_state_dict(checkpoint["model_state"])

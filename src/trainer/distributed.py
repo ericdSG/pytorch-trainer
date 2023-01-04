@@ -21,6 +21,7 @@ def worker(fn: Callable, **kwargs) -> None:
     # subprocess logs are sent to log_queue and managed by main processes
     logger.root.addHandler(QueueHandler(kwargs["log_queue"]))
     logger.info(f"Initialized worker")
+    assert not kwargs["cfg"].cuda.ddp
 
     # execute the target function
     fn(**kwargs)
@@ -35,6 +36,7 @@ def ddp_worker(fn: Callable, rank: int, world_size: int, **kwargs) -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12356"
     init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    assert kwargs["cfg"].cuda.ddp and torch.distributed.is_initialized()
 
     # subprocess logs are sent to log_queue and managed by main processes
     logger.root.addHandler(QueueHandler(kwargs["log_queue"]))
@@ -64,12 +66,18 @@ def spawn(
         fn(**locals())
         return
 
+    if cfg.cuda.ddp:
+        world_size = cfg.cuda.num_gpus
+        target = ddp_worker
+    else:  # single-GPU or DataParallel
+        world_size = 1
+        target = worker
+
     kwargs = locals()  # freeze locals before creating temp variables in loop
     subprocesses = []  # keep track of subprocesses created for each GPU
 
     # spawn a subprocess for each GPU
-    for rank in range(world_size := cfg.cuda.num_gpus):
-        target = ddp_worker if world_size > 1 else worker
+    for rank in range(world_size):
         kwargs = kwargs | dict(rank=rank, world_size=world_size)
         p = mp.Process(target=target, kwargs=kwargs)
         p.start()

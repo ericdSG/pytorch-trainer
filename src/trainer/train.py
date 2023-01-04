@@ -1,6 +1,5 @@
 """
-A PyTorch training loop template with built-in support for
-DistributedDataParallel and automatic mixed precision.
+A PyTorch training loop template for new projects.
 
 Created: Nov 2022 by Piotr Ozimek
 Updated: Dec 2022 by Eric DeMattos
@@ -8,7 +7,6 @@ Updated: Dec 2022 by Eric DeMattos
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -17,6 +15,7 @@ import torch
 from omegaconf import DictConfig
 from torch.cuda.amp import GradScaler
 from torch.distributed.algorithms.join import Join
+from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 
@@ -51,9 +50,9 @@ class Trainer:
         self.t_dl = t_dl
         self.v_dl = v_dl
         self.metrics = metrics
+        self.queue = queue
         self.rank = rank
         self.comparison = comparison
-        self.queue = queue
 
         # training
         self.start_epoch = self.epoch = 0
@@ -64,7 +63,7 @@ class Trainer:
             epochs=self.cfg.train.epochs,
             steps_per_epoch=len(self.t_dl),
         )
-        self.scaler = GradScaler()  # automatic mixed precision
+        self.scaler = GradScaler()  # automatic mixed precision (amp)
 
         # list of objects that need to be closed at the end of training
         self.closable = []
@@ -86,12 +85,11 @@ class Trainer:
 
     def _run_batch(self, x, y, train) -> list[torch.Tensor]:
 
-        x, y = x.to(self.rank, non_blocking=True), y.to(
-            self.rank, non_blocking=True
-        )
+        x = x.to(self.rank, non_blocking=True)
+        y = y.to(self.rank, non_blocking=True)
 
         # forward pass
-        if not train and torch.distributed.is_initialized():
+        if not train and self.cfg.cuda.ddp:
             # get non-replicated model for eval
             # https://discuss.pytorch.org/t/99867/11
             y_hat = self.model.module(x)
@@ -137,9 +135,9 @@ class Trainer:
             count += x.shape[0]
             self.queue.put((self.rank, count, len(dl), self.epoch + 1))
 
-        # need to update dashboardwhen current rank has no samples to process
+        # update dashboard panel when current rank has no samples to process
         if len(dl) == 0:
-            self.queue.put((self.rank, 0, 0, self.epoch + 1))
+            self.queue.put((self.rank, 1, 1, self.epoch + 1))
 
         return meters
 
@@ -175,7 +173,7 @@ class Trainer:
 
     def predict(self, dl: DataLoader, train: bool) -> list[float]:
 
-        if torch.distributed.is_initialized():
+        if self.cfg.cuda.ddp:
             meters = self._predict_ddp(dl, train=train)
         else:
             meters = self._predict(dl, train=train)
@@ -242,10 +240,10 @@ class Trainer:
             return
 
         # distributed models are wrapped in a DDP object
-        if torch.distributed.is_initialized():
-            model_state_dict = self.model.module.state_dict()
-        else:
-            model_state_dict = self.model.state_dict()
+        # if self.cfg.cuda.ddp:
+        #     model_state_dict = self.model.module.state_dict()
+        # else:
+        model_state_dict = self.model.state_dict()
 
         checkpoint = {
             "epoch": self.epoch + 1,  # add 1 for start_epoch if resume
@@ -266,13 +264,19 @@ class Trainer:
         logger.debug(f"Loading {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path)
 
+        # DP/DDP model state dicts prefixes must be stripped
+        if self.cfg.cuda.num_gpus == 1:
+            consume_prefix_in_state_dict_if_present(
+                checkpoint["model_state"], "module."
+            )
+
         # load variables from checkpoint
         self.start_epoch = checkpoint["epoch"]
         self.metrics = checkpoint["metrics"]
-        if torch.distributed.is_initialized():
-            self.model.module.load_state_dict(checkpoint["model_state"])
-        else:
-            self.model.load_state_dict(checkpoint["model_state"])
+        # if self.cfg.cuda.ddp:
+        #     self.model.module.load_state_dict(checkpoint["model_state"])
+        # else:
+        self.model.load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         self.lr_scheduler.load_state_dict(checkpoint["scheduler_state"])
         self.scaler.load_state_dict(checkpoint["scaler_state"])

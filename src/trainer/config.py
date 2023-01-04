@@ -13,6 +13,8 @@ from typing import Any, Optional
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from .logging import create_file_handler, create_rich_handler
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,7 @@ class Arch:
 @dataclass
 class CUDA:
     num_gpus: int  # negative number resolves to max number of GPUs available
+    ddp: Optional[bool] = field(default=True)
     visible_devices: Optional[list[int]] = field(
         default_factory=lambda: [i for i in range(torch.cuda.device_count())]
     )  # expose all GPU devices by default
@@ -137,6 +140,9 @@ def configure_device(cfg: DictConfig) -> DictConfig:
         logger.error("To use CPU, remove mixed precision (amp) from Trainer")
         exit(1)
 
+    if cfg.cuda.ddp and (cfg.cuda.num_gpus <= 1):
+        OmegaConf.update(cfg, "cuda.ddp", False)
+
     devices = range(len(cfg.cuda.visible_devices))[: cfg.cuda.num_gpus]
     cuda = ", ".join([f"cuda:{cfg.cuda.visible_devices[i]}" for i in devices])
     logger.info(f"Using {cuda if cfg.cuda.num_gpus > 0 else 'cpu'}")
@@ -181,5 +187,14 @@ def parse_config(cfg: DictConfig) -> DictConfig:
     except FileExistsError:
         logging.error(f"Experiment already exists at {cfg.experiment_dir}")
         exit(1)
+
+    # root logging handlers are instantiated here instead of log.yml so default
+    # Console object used by Rich is shared between RichHandler and RichProgress
+    # https://github.com/Textualize/rich/issues/1379
+    logger.root.addHandler(create_rich_handler())
+    logger.root.addHandler(create_file_handler(cfg.log))
+
+    # validate config file after logging has been fully set up
+    process_config(cfg)
 
     return cfg
