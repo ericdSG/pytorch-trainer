@@ -55,31 +55,26 @@ def ddp_worker(fn: Callable, rank: int, world_size: int, **kwargs) -> None:
 def spawn(
     fn: Callable,
     cfg: DictConfig,
-    queue: mp.Queue,
     log_queue: mp.Queue,
 ) -> None:
     """
     Create a subprocess (worker) for each GPU
     """
 
-    if cfg.debug:  # disable multiprocessing to use breakpoints
-        fn(**locals())
-        return
+    # share memory between processes by passing messages via queue (for pbars)
+    queue = torch.multiprocessing.Queue()
 
-    if cfg.cuda.ddp:
-        world_size = cfg.cuda.num_gpus
-        target = ddp_worker
-    else:  # single-GPU or DataParallel
-        world_size = 1
-        target = worker
+    if cfg.debug:  # do not spawn any subprocesses (pbars will not be displayed)
+        return fn(**locals())
 
-    kwargs = locals()  # freeze locals before creating temp variables in loop
-    subprocesses = []  # keep track of subprocesses created for each GPU
+    world_size = cfg.cuda.num_gpus if cfg.cuda.ddp else 1
+    target = ddp_worker if cfg.cuda.ddp else worker
+    kwargs = locals()  # freeze locals to avoid "cannot pickle 'weakref' object"
 
     # spawn a subprocess for each GPU
+    subprocesses = []
     for rank in range(world_size):
-        kwargs = kwargs | dict(rank=rank, world_size=world_size)
-        p = mp.Process(target=target, kwargs=kwargs)
+        p = mp.Process(target=target, kwargs=kwargs | dict(rank=rank))
         p.start()
         subprocesses.append(p)
 
